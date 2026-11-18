@@ -1,0 +1,6 @@
+{
+  "name": "Yoma Goods",
+  "description": "Modern e-commerce storefront and seller admin console with real-time buyer-seller chat, live order tracking, wishlists, saved addresses, and KPay, WavePay, and bank transfer payments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
