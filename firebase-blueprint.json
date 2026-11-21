@@ -1,0 +1,206 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Catalog product displayed in the Shoptopia storefront and managed by the seller admin.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sku": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "nameMm": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "price": { "type": "number" },
+        "compareAtPrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "popular": { "type": "boolean" },
+        "rating": { "type": "number" },
+        "soldCount": { "type": "number" },
+        "image": { "type": "string", "maxLength": 800000 },
+        "variants": { "type": "array" },
+        "description": { "type": "string", "maxLength": 2000 },
+        "descriptionMm": { "type": "string", "maxLength": 2000 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sku", "name", "nameMm", "category", "price", "stock", "popular", "rating", "soldCount", "image", "variants", "description", "descriptionMm", "createdAt", "updatedAt"]
+    },
+    "BannerSlide": {
+      "title": "BannerSlide",
+      "description": "Storefront hero carousel slide.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "kicker": { "type": "string", "maxLength": 120 },
+        "kickerMm": { "type": "string", "maxLength": 200 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "titleMm": { "type": "string", "maxLength": 300 },
+        "subtitle": { "type": "string", "maxLength": 500 },
+        "subtitleMm": { "type": "string", "maxLength": 600 },
+        "ctaLabel": { "type": "string", "maxLength": 80 },
+        "ctaLabelMm": { "type": "string", "maxLength": 120 },
+        "targetCategory": { "type": "string", "maxLength": 100 },
+        "image": { "type": "string", "maxLength": 800000 },
+        "sortOrder": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "kicker", "kickerMm", "title", "titleMm", "subtitle", "subtitleMm", "ctaLabel", "ctaLabelMm", "targetCategory", "image", "sortOrder", "updatedAt"]
+    },
+    "StoreCatalog": {
+      "title": "StoreCatalog",
+      "description": "Storewide categories, editable brand name & home logo banner config, and analytics reset timestamp.",
+      "type": "object",
+      "properties": {
+        "categories": { "type": "array" },
+        "brand": { "type": "object" },
+        "analyticsResetAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["categories", "updatedAt"]
+    },
+    "PaymentConfig": {
+      "title": "PaymentConfig",
+      "description": "Seller KPay, WavePay, and mobile banking accounts displayed at checkout.",
+      "type": "object",
+      "properties": {
+        "kpay": { "type": "object" },
+        "wavepay": { "type": "object" },
+        "bankAccounts": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["kpay", "wavepay", "bankAccounts", "updatedAt"]
+    },
+    "BuyerProfile": {
+      "title": "BuyerProfile",
+      "description": "Isolated buyer account profile and wishlist.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "wishlist": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "email", "phone", "wishlist", "createdAt", "updatedAt"]
+    },
+    "Address": {
+      "title": "Address",
+      "description": "Buyer saved delivery address.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "recipientName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "phone": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "city": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "township": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "streetAddress": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "isDefault": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "label", "recipientName", "phone", "city", "township", "streetAddress", "isDefault", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order and payment verification state.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "shippingAddress": { "type": "object" },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "shippingFee": { "type": "number" },
+        "total": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["KPay", "WavePay", "BankTransfer"] },
+        "paymentReference": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "bankName": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "enum": ["Pending", "Verified", "Shipped", "Delivered", "Cancelled"] },
+        "trackingHistory": { "type": "array" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "buyerId", "customerName", "customerPhone", "shippingAddress", "items", "subtotal", "shippingFee", "total", "paymentMethod", "paymentReference", "status", "trackingHistory", "createdAt", "serverCreatedAt", "updatedAt"]
+    },
+    "ChatThread": {
+      "title": "ChatThread",
+      "description": "Buyer-seller support chat thread metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 140, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "buyerPhone": { "type": "string", "maxLength": 40 },
+        "lastMessageAt": { "type": "string", "maxLength": 64 },
+        "lastMessagePreview": { "type": "string", "maxLength": 300 },
+        "unreadByAdmin": { "type": "number" },
+        "unreadByBuyer": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "buyerId", "buyerName", "buyerPhone", "lastMessageAt", "lastMessagePreview", "unreadByAdmin", "unreadByBuyer", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual message inside a buyer-seller chat thread.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "threadId": { "type": "string", "minLength": 1, "maxLength": 140, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderRole": { "type": "string", "enum": ["buyer", "admin"] },
+        "senderUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "text": { "type": "string", "maxLength": 2000 },
+        "imageUrl": { "type": "string", "maxLength": 800000 },
+        "contextTag": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["id", "threadId", "senderRole", "senderUid", "senderName", "text", "createdAt", "serverCreatedAt", "read"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Public storefront product catalog; writable by admin (and stock decrement on checkout)."
+    },
+    "/banners/{bannerId}": {
+      "schema": { "$ref": "#/entities/BannerSlide" },
+      "description": "Public storefront banner carousel slides; writable by admin."
+    },
+    "/storeCatalog/{docId}": {
+      "schema": { "$ref": "#/entities/StoreCatalog" },
+      "description": "Public store categories and analytics reset timestamp; writable by admin."
+    },
+    "/paymentConfig/{docId}": {
+      "schema": { "$ref": "#/entities/PaymentConfig" },
+      "description": "Merchant KPay, WavePay, and bank account details shown at checkout; writable by admin."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/BuyerProfile" },
+      "description": "Private buyer profile and wishlist scoped by auth UID."
+    },
+    "/users/{userId}/addresses/{addressId}": {
+      "schema": { "$ref": "#/entities/Address" },
+      "description": "Private buyer saved delivery addresses."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders isolated to owner buyerId and admin."
+    },
+    "/chatThreads/{threadId}": {
+      "schema": { "$ref": "#/entities/ChatThread" },
+      "description": "Buyer-seller support chat thread metadata."
+    },
+    "/chatThreads/{threadId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Messages belonging to a support chat thread."
+    }
+  }
+}

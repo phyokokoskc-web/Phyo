@@ -1,0 +1,97 @@
+/**
+ * Security Rule Adversarial Verification Suite ("Dirty Dozen" Payloads)
+ * Documents expected PERMISSION_DENIED vs ALLOWED behaviors for Shoptopia Firestore rules.
+ */
+export const DIRTY_DOZEN_CASES = [
+  {
+    name: '1. Unauthenticated product creation',
+    path: 'products/prod-evil',
+    auth: null,
+    operation: 'create',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '2. Buyer price tampering on product update',
+    path: 'products/prod-1',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'update',
+    payload: { price: 1 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '3. Buyer stock inflation on product update',
+    path: 'products/prod-1',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'update',
+    payload: { stock: 9999, soldCount: 0 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '4. Shadow role injection in /users/{uid}',
+    path: 'users/buyer-a',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'create',
+    payload: { id: 'buyer-a', name: 'Buyer A', email: 'buyera@gmail.com', phone: '', wishlist: [], isAdmin: true },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '5. Cross-user PII read on /users/{otherUid}',
+    path: 'users/buyer-a',
+    auth: { uid: 'buyer-b', email_verified: true, email: 'buyerb@gmail.com' },
+    operation: 'get',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '6. Unfiltered list query scraping /orders',
+    path: 'orders',
+    auth: { uid: 'buyer-b', email_verified: true, email: 'buyerb@gmail.com' },
+    operation: 'list',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '7. Order creation with Delivered status shortcut',
+    path: 'orders/YG-9999',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'create',
+    payload: { id: 'YG-9999', buyerId: 'buyer-a', status: 'Delivered' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '8. Buyer updating own order status to Verified',
+    path: 'orders/YG-1045',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'update',
+    payload: { status: 'Verified' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '9. Buyer spoofing admin senderRole in chat message',
+    path: 'chatThreads/thread-buyer-a/messages/msg-1',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'create',
+    payload: { senderRole: 'admin', senderUid: 'buyer-a' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '10. Orphaned address write without parent /users/{uid}',
+    path: 'users/buyer-ghost/addresses/addr-1',
+    auth: { uid: 'buyer-ghost', email_verified: true, email: 'ghost@gmail.com' },
+    operation: 'create',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '11. Client-forged timestamp instead of serverTimestamp',
+    path: 'orders/YG-1046',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'create',
+    payload: { serverCreatedAt: '2020-01-01T00:00:00Z' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '12. Resource poisoning oversized ID',
+    path: `products/${'x'.repeat(300)}`,
+    auth: { uid: 'admin-1', email_verified: true, email: 'phyokoko.ctd@gmail.com' },
+    operation: 'create',
+    expected: 'PERMISSION_DENIED',
+  },
+] as const;

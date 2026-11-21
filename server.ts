@@ -44,13 +44,13 @@ function defaultPaymentSettings(): PaymentSettings {
   return {
     kpay: {
       enabled: true,
-      accountName: 'Su&KoKo Official (KBZPay)',
+      accountName: 'Shoptopia Official (KBZPay)',
       phone: '09-784-512-900',
       qrImage: '',
     },
     wavepay: {
       enabled: true,
-      accountName: 'Su&KoKo Official (WavePay)',
+      accountName: 'Shoptopia Official (WavePay)',
       phone: '09-799-310-445',
       qrImage: '',
     },
@@ -59,21 +59,21 @@ function defaultPaymentSettings(): PaymentSettings {
         id: 'bank-1',
         bankName: 'KBZ Bank',
         accountNumber: '0443-0104-9002-1820',
-        accountHolder: 'Su&KoKo Co., Ltd',
+        accountHolder: 'Shoptopia Co., Ltd',
         enabled: true,
       },
       {
         id: 'bank-2',
         bankName: 'CB Bank',
         accountNumber: '0010-6005-0008-4912',
-        accountHolder: 'Su&KoKo Co., Ltd',
+        accountHolder: 'Shoptopia Co., Ltd',
         enabled: true,
       },
       {
         id: 'bank-3',
         bankName: 'AYA Bank',
         accountNumber: '2001-4102-8834-0019',
-        accountHolder: 'Su&KoKo Co., Ltd',
+        accountHolder: 'Shoptopia Co., Ltd',
         enabled: true,
       },
     ],
@@ -540,7 +540,7 @@ function createSeedData(): StoreData {
           id: 'msg-2',
           threadId: 'thread-buyer-1',
           senderRole: 'admin',
-          senderName: 'Su&KoKo Support',
+          senderName: 'Shoptopia Support',
           text: 'Mingalaba Kyaw Zin Htet! Yes, both Linear Red and Tactile Brown switches are ready in our Bahan warehouse for same-day Yangon courier dispatch.',
           createdAt: daysAgoIso(0, 9),
           read: true,
@@ -647,7 +647,13 @@ function getOrCreateBuyer(rawId?: unknown): BuyerAccount {
 }
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -735,7 +741,7 @@ wss.on('connection', (ws) => {
         const senderRole = parsed.payload.senderRole === 'admin' ? 'admin' : 'buyer';
         const senderName = String(
           parsed.payload.senderName ||
-            (senderRole === 'admin' ? 'Su&KoKo Support' : buyer.profile.name || 'Guest Buyer')
+            (senderRole === 'admin' ? 'Shoptopia Support' : buyer.profile.name || 'Guest Buyer')
         );
         const contextTag = parsed.payload.contextTag ? String(parsed.payload.contextTag) : undefined;
         appendChatMessage({
@@ -765,12 +771,23 @@ wss.on('connection', (ws) => {
             broadcast({ type: 'chat:read', payload: { threadId, readerRole } });
           }
         }
+      } else if (parsed.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
       }
     } catch (err) {
       console.error('WS message error:', err);
     }
   });
 });
+
+// Keep WebSocket connections alive across reverse proxies
+setInterval(() => {
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.ping();
+    }
+  }
+}, 20000);
 
 // REST API Endpoints
 app.get('/api/bootstrap', (req, res) => {
@@ -887,17 +904,29 @@ app.post('/api/products', (req, res) => {
       Array.isArray(body.variants) && body.variants.length > 0
         ? body.variants
         : ['Standard'],
-    description: body.description?.trim() || 'Crafted everyday essential from Su&KoKo.',
-    descriptionMm: body.descriptionMm?.trim() || 'Su&KoKo ၏ အရည်အသွေးမြင့် ကုန်ပစ္စည်း။',
+    description: body.description?.trim() || 'Crafted everyday essential from Shoptopia.',
+    descriptionMm: body.descriptionMm?.trim() || 'Shoptopia ၏ အရည်အသွေးမြင့် ကုန်ပစ္စည်း။',
     createdAt: new Date().toISOString(),
   };
 
+  let categoryAdded = false;
   if (!store.categories.includes(newProduct.category)) {
     store.categories.push(newProduct.category);
+    categoryAdded = true;
   }
   store.products.unshift(newProduct);
   saveStore();
   broadcast({ type: 'product:created', payload: newProduct });
+  if (categoryAdded) {
+    broadcast({
+      type: 'categories:updated',
+      payload: {
+        categories: store.categories,
+        products: store.products,
+        banners: store.banners,
+      },
+    });
+  }
   res.status(201).json(newProduct);
 });
 
@@ -937,9 +966,24 @@ app.put('/api/products/:id', (req, res) => {
         ? String(body.descriptionMm).trim()
         : existing.descriptionMm,
   };
+  let categoryAdded = false;
+  if (updated.category && !store.categories.includes(updated.category)) {
+    store.categories.push(updated.category);
+    categoryAdded = true;
+  }
   store.products[idx] = updated;
   saveStore();
   broadcast({ type: 'product:updated', payload: updated });
+  if (categoryAdded) {
+    broadcast({
+      type: 'categories:updated',
+      payload: {
+        categories: store.categories,
+        products: store.products,
+        banners: store.banners,
+      },
+    });
+  }
   res.json(updated);
 });
 
@@ -1209,7 +1253,7 @@ app.post('/api/chat/send', (req, res) => {
     senderRole: senderRole === 'admin' ? 'admin' : 'buyer',
     senderName:
       senderName ||
-      (senderRole === 'admin' ? 'Su&KoKo Support' : buyer.profile.name || 'Guest Buyer'),
+      (senderRole === 'admin' ? 'Shoptopia Support' : buyer.profile.name || 'Guest Buyer'),
     text,
     contextTag,
   });
@@ -1380,7 +1424,9 @@ app.delete('/api/categories/:name', (req, res) => {
 
 // Vite Middleware in Development / Static Build in Production
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  const isProduction =
+    process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
+  if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
@@ -1396,7 +1442,7 @@ async function startServer() {
   }
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Su&KoKo server listening on http://localhost:${PORT}`);
+    console.log(`Shoptopia server listening on http://localhost:${PORT}`);
   });
 }
 

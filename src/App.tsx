@@ -7,24 +7,52 @@ import {
   MessageSquare,
   Globe,
   X,
+  LogIn,
+  LogOut,
+  ShieldCheck,
+  User as UserIcon,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import type {
   Address,
   BannerSlide,
   BootstrapPayload,
   CartItem,
+  ChatMessage,
   ChatThread,
   Language,
   Order,
   PaymentSettings,
   Product,
+  StoreBrandConfig,
   UserProfile,
-  WsServerEvent,
 } from './types';
 import { t } from './i18n';
-import { useWebSocket } from './hooks/useWebSocket';
+import {
+  auth,
+  db,
+  handleFirestoreError,
+  isAdminEmail,
+  OperationType,
+  signInWithGoogle,
+  signOutUser,
+} from './firebase';
+import {
+  DEFAULT_PAYMENT_SETTINGS,
+  DEFAULT_STORE_BRAND,
+  deleteChatMessageDoc,
+  ensureBuyerProfileDoc,
+  markThreadMessagesRead,
+  sendChatMessageDoc,
+  syncLocalSeedToFirestoreIfEmpty,
+  toggleWishlistDoc,
+} from './services/firestoreStore';
 import { BannerSlider } from './components/BannerSlider';
-import { ProductCard } from './components/ProductCard';
+import { StoreLogoBanner } from './components/StoreLogoBanner';
+import { ProductCard, type ProductLayoutMode } from './components/ProductCard';
 import { ProductDetailModal } from './components/ProductDetailModal';
 import { CartCheckoutDrawer } from './components/CartCheckoutDrawer';
 import { OrdersView } from './components/OrdersView';
@@ -32,9 +60,79 @@ import { ProfileView } from './components/ProfileView';
 import { WishlistView } from './components/WishlistView';
 import { LiveChatWidget } from './components/LiveChatWidget';
 import { AdminDashboard } from './components/AdminDashboard';
+import { BuyerAuthPanel } from './components/BuyerAuthPanel';
 
 type AppView = 'shop' | 'wishlist' | 'orders' | 'profile' | 'admin';
 type SortOption = 'popular' | 'price-asc' | 'price-desc' | 'newest';
+
+interface CartRef {
+  productId: string;
+  quantity: number;
+  variant: string;
+}
+
+function safeGetStorage(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetStorage(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage errors in restricted WebViews
+  }
+}
+
+function loadCartRefs(storageKey: string): CartRef[] {
+  try {
+    const raw = safeGetStorage(storageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Array<{
+      productId?: string;
+      product?: { id?: string };
+      quantity?: number;
+      variant?: string;
+    }>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        productId: item.productId || item.product?.id || '',
+        quantity: Math.max(1, Number(item.quantity) || 1),
+        variant: item.variant || 'Standard',
+      }))
+      .filter((item) => Boolean(item.productId));
+  } catch {
+    return [];
+  }
+}
+
+function loadCachedChatThreads(scopeKey: string): ChatThread[] {
+  try {
+    const raw = safeGetStorage(`yg_chat_threads_${scopeKey}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ChatThread[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadCachedChatMessages(scopeKey: string): Record<string, ChatMessage[]> {
+  try {
+    const raw = safeGetStorage(`yg_chat_msgs_${scopeKey}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, ChatMessage[]>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 function pathToView(pathname: string): AppView {
   const clean = pathname.replace(/\/+$/, '').toLowerCase();
@@ -47,34 +145,45 @@ function pathToView(pathname: string): AppView {
 
 function viewToPath(v: AppView): string {
   if (v === 'shop') return '/';
+  if (v === 'admin') return '/seller';
   return `/${v}`;
 }
 
 export default function App() {
   const [view, setView] = useState<AppView>(() => pathToView(window.location.pathname));
   const [lang, setLang] = useState<Language>(() => {
-    return (localStorage.getItem('yg_lang') as Language) || 'en';
+    const saved = safeGetStorage('yg_lang');
+    return saved === 'mm' ? 'mm' : 'en';
   });
-  const [dark, setDark] = useState<boolean>(() => {
-    const saved = localStorage.getItem('yg_theme');
-    return saved === 'dark';
-  });
+  const [dark, setDark] = useState<boolean>(() => safeGetStorage('yg_theme') === 'dark');
 
-  const [buyerId, setBuyerId] = useState<string>(() => {
-    const existing = localStorage.getItem('yg_buyer_id');
-    if (existing) return existing;
-    const generated = `buyer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    localStorage.setItem('yg_buyer_id', generated);
-    return generated;
-  });
+  // Firebase Auth State
+  const [authReady, setAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authUiError, setAuthUiError] = useState('');
 
-  const [loading, setLoading] = useState(true);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [banners, setBanners] = useState<BannerSlide[]>([]);
+  const isAuthenticated = Boolean(authUser);
+  const isSellerAdmin = Boolean(authUser && isAdminEmail(authUser.email, authUser.emailVerified));
+  const buyerId = authUser?.uid || 'guest';
+
+  // Cloud Public Storefront State
+  const [productsLoaded, setProductsLoaded] = useState(false);
+  const [cloudCatalogExists, setCloudCatalogExists] = useState(false);
+  const [cloudProducts, setCloudProducts] = useState<Product[]>([]);
+  const [cloudCategories, setCloudCategories] = useState<string[]>([]);
+  const [cloudBanners, setCloudBanners] = useState<BannerSlide[]>([]);
+  const [cloudPaymentSettings, setCloudPaymentSettings] = useState<PaymentSettings>(
+    DEFAULT_PAYMENT_SETTINGS
+  );
+  const [cloudBrand, setCloudBrand] = useState<StoreBrandConfig>(DEFAULT_STORE_BRAND);
+  const [analyticsResetAt, setAnalyticsResetAt] = useState<string | undefined>(undefined);
+  const [fallbackSeed, setFallbackSeed] = useState<BootstrapPayload | null>(null);
+  const [cloudConnected, setCloudConnected] = useState(true);
+
+  // Authenticated Private Buyer / Admin State
   const [orders, setOrders] = useState<Order[]>([]);
   const [profile, setProfile] = useState<UserProfile>({
-    id: buyerId,
+    id: 'guest',
     name: 'Guest Buyer',
     email: '',
     phone: '',
@@ -82,68 +191,71 @@ export default function App() {
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [wishlist, setWishlist] = useState<string[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThread[]>([]);
-  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>({
-    kpay: { enabled: true, accountName: 'Su&KoKo Official (KBZPay)', phone: '09-784-512-900', qrImage: '' },
-    wavepay: { enabled: true, accountName: 'Su&KoKo Official (WavePay)', phone: '09-799-310-445', qrImage: '' },
-    bankAccounts: [],
-  });
-  const [analyticsResetAt, setAnalyticsResetAt] = useState<string | undefined>(undefined);
+  const [threadMessagesMap, setThreadMessagesMap] = useState<Record<string, ChatMessage[]>>({});
+  const [selectedAdminThreadId, setSelectedAdminThreadId] = useState<string>('');
+  const [chatThreadsLoaded, setChatThreadsLoaded] = useState(false);
+  const [loadedThreadIds, setLoadedThreadIds] = useState<Record<string, boolean>>({});
+  const [chatSyncError, setChatSyncError] = useState('');
 
   // Storefront Filter & Search
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [popularOnly, setPopularOnly] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>('popular');
-
-  // Cart, Modals, Chat (namespaced per buyerId)
-  const [cart, setCart] = useState<CartItem[]>(() => {
-    try {
-      const saved =
-        localStorage.getItem(`yg_cart_${buyerId}`) || localStorage.getItem('yg_cart');
-      return saved ? (JSON.parse(saved) as CartItem[]) : [];
-    } catch {
-      return [];
-    }
+  const [buyerProductLayout, setBuyerProductLayout] = useState<ProductLayoutMode>(() => {
+    const saved = safeGetStorage('yg_buyer_layout');
+    return saved === 'list' ? 'list' : 'grid2';
   });
+  const updateBuyerProductLayout = useCallback((mode: ProductLayoutMode) => {
+    setBuyerProductLayout(mode);
+    safeSetStorage('yg_buyer_layout', mode);
+  }, []);
+
+  // Compact Cart Refs & Drawers
+  const [cartRefs, setCartRefs] = useState<CartRef[]>(() => loadCartRefs('yg_cart_refs_guest'));
   const [cartOpen, setCartOpen] = useState(false);
-  const [directBuyItem, setDirectBuyItem] = useState<CartItem | null>(null);
-  const [detailProduct, setDetailProduct] = useState<Product | null>(null);
+  const [directBuyRef, setDirectBuyRef] = useState<CartRef | null>(null);
+  const [detailProductId, setDetailProductId] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatContext, setChatContext] = useState<string | undefined>(undefined);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [pendingWishlistId, setPendingWishlistId] = useState<string | null>(null);
+  const [profileLoadedUid, setProfileLoadedUid] = useState<string | null>(null);
+  const [ordersLoadedUid, setOrdersLoadedUid] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-
-  const isAdminRef = useRef(view === 'admin');
-  const buyerIdRef = useRef(buyerId);
-  useEffect(() => {
-    isAdminRef.current = view === 'admin';
-  }, [view]);
-  useEffect(() => {
-    buyerIdRef.current = buyerId;
-    localStorage.setItem('yg_buyer_id', buyerId);
-  }, [buyerId]);
 
   const catalogRef = useRef<HTMLElement | null>(null);
   const dict = t(lang);
+  const syncErrorTextRef = useRef(dict.chat.syncError);
+  syncErrorTextRef.current = dict.chat.syncError;
+  const isAdminStream = view === 'admin' && isSellerAdmin;
 
-  // Sync Dark Mode class on <html>
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => {
+      setToast((curr) => (curr === msg ? null : curr));
+    }, 2600);
+  }, []);
+
+  // Dark Mode & Language Persistence
   useEffect(() => {
     const root = document.documentElement;
     if (dark) {
       root.classList.add('dark');
-      localStorage.setItem('yg_theme', 'dark');
+      safeSetStorage('yg_theme', 'dark');
     } else {
       root.classList.remove('dark');
-      localStorage.setItem('yg_theme', 'light');
+      safeSetStorage('yg_theme', 'light');
     }
   }, [dark]);
 
   useEffect(() => {
-    localStorage.setItem('yg_lang', lang);
+    safeSetStorage('yg_lang', lang);
   }, [lang]);
 
   useEffect(() => {
-    localStorage.setItem(`yg_cart_${buyerId}`, JSON.stringify(cart));
-  }, [cart, buyerId]);
+    safeSetStorage(`yg_cart_refs_${buyerId}`, JSON.stringify(cartRefs));
+  }, [cartRefs, buyerId]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -162,156 +274,472 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  // Initial & role-scoped server bootstrap
-  const isAdminView = view === 'admin';
+  // Firebase Auth Listener
   useEffect(() => {
-    let active = true;
-    const url = isAdminView
-      ? '/api/bootstrap?role=admin'
-      : `/api/bootstrap?buyerId=${encodeURIComponent(buyerId)}`;
-    fetch(url)
-      .then((res) => res.json())
-      .then((data: BootstrapPayload) => {
-        if (!active) return;
-        setProducts(data.products);
-        setCategories(data.categories);
-        setBanners(data.banners);
-        setOrders(data.orders);
-        setProfile(data.profile);
-        setAddresses(data.addresses);
-        setWishlist(data.wishlist);
-        setChatThreads(data.chatThreads);
-        if (data.paymentSettings) setPaymentSettings(data.paymentSettings);
-        setAnalyticsResetAt(data.analyticsResetAt);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [isAdminView, buyerId]);
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setAuthUser(user);
+      setAuthReady(true);
+      setAuthUiError('');
+      setProfileLoadedUid(null);
+      setOrdersLoadedUid(null);
+      setOrders([]);
+      setAddresses([]);
+      setWishlist([]);
+      setChatThreads([]);
+      setThreadMessagesMap({});
+      setChatThreadsLoaded(false);
+      setLoadedThreadIds({});
+      setChatSyncError('');
 
-  // Real-time WebSocket Event Handler (Idempotent)
-  const handleWsEvent = useCallback((event: WsServerEvent) => {
-    switch (event.type) {
-      case 'product:created':
-        setProducts((prev) =>
-          prev.some((p) => p.id === event.payload.id) ? prev : [event.payload, ...prev]
-        );
-        break;
-      case 'product:updated':
-        setProducts((prev) =>
-          prev.map((p) => (p.id === event.payload.id ? event.payload : p))
-        );
-        break;
-      case 'product:deleted':
-        setProducts((prev) => prev.filter((p) => p.id !== event.payload.id));
-        break;
-      case 'order:created':
-        if (!isAdminRef.current && event.payload.buyerId !== buyerIdRef.current) break;
-        setOrders((prev) =>
-          prev.some((o) => o.id === event.payload.id) ? prev : [event.payload, ...prev]
-        );
-        break;
-      case 'order:updated':
-        if (!isAdminRef.current && event.payload.buyerId !== buyerIdRef.current) break;
-        setOrders((prev) =>
-          prev.map((o) => (o.id === event.payload.id ? event.payload : o))
-        );
-        break;
-      case 'chat:message': {
-        const { threadId, message, thread } = event.payload;
-        if (
-          !isAdminRef.current &&
-          threadId !== `thread-${buyerIdRef.current}` &&
-          thread?.buyerId !== buyerIdRef.current
-        ) {
-          break;
-        }
-        setChatThreads((prev) => {
-          const exists = prev.find((th) => th.id === threadId);
-          if (!exists) {
-            return thread ? [thread, ...prev] : prev;
+      if (user) {
+        const guestCart = loadCartRefs('yg_cart_refs_guest');
+        const userCart = loadCartRefs(`yg_cart_refs_${user.uid}`);
+        const mergedCart = [...userCart];
+        for (const gItem of guestCart) {
+          const idx = mergedCart.findIndex(
+            (uItem) => uItem.productId === gItem.productId && uItem.variant === gItem.variant
+          );
+          if (idx >= 0) {
+            mergedCart[idx] = {
+              ...mergedCart[idx],
+              quantity: mergedCart[idx].quantity + gItem.quantity,
+            };
+          } else {
+            mergedCart.push(gItem);
           }
-          return prev.map((th) => {
-            if (th.id !== threadId) return th;
-            if (th.messages.some((m) => m.id === message.id)) return th;
-            return {
-              ...th,
-              lastMessageAt: message.createdAt,
-              messages: [...th.messages, message],
-            };
-          });
+        }
+        setCartRefs(mergedCart);
+        safeSetStorage(`yg_cart_refs_${user.uid}`, JSON.stringify(mergedCart));
+        if (guestCart.length > 0) {
+          safeSetStorage('yg_cart_refs_guest', '[]');
+        }
+
+        void ensureBuyerProfileDoc(user.uid, {
+          name: user.displayName,
+          email: user.email,
+          phone: user.phoneNumber,
+        }).catch(() => undefined);
+
+        if (isAdminEmail(user.email, user.emailVerified)) {
+          void syncLocalSeedToFirestoreIfEmpty();
+        }
+      } else {
+        setProfile({
+          id: 'guest',
+          name: 'Guest Buyer',
+          email: '',
+          phone: '',
         });
-        break;
+        setCartRefs(loadCartRefs('yg_cart_refs_guest'));
       }
-      case 'chat:read': {
-        const { threadId, readerRole } = event.payload;
-        if (!isAdminRef.current && threadId !== `thread-${buyerIdRef.current}`) break;
-        setChatThreads((prev) =>
-          prev.map((th) => {
-            if (th.id !== threadId) return th;
-            return {
-              ...th,
-              messages: th.messages.map((m) =>
-                m.senderRole !== readerRole ? { ...m, read: true } : m
-              ),
-            };
-          })
-        );
-        break;
-      }
-      case 'banners:updated':
-        setBanners(event.payload);
-        break;
-      case 'categories:updated':
-        setCategories(event.payload.categories);
-        setProducts(event.payload.products);
-        setBanners(event.payload.banners);
-        break;
-      case 'paymentSettings:updated':
-        setPaymentSettings(event.payload);
-        break;
-      case 'analytics:reset':
-        setAnalyticsResetAt(event.payload.analyticsResetAt);
-        setOrders(
-          isAdminRef.current
-            ? event.payload.orders
-            : event.payload.orders.filter((o) => o.buyerId === buyerIdRef.current)
-        );
-        setProducts(event.payload.products);
-        break;
-      default:
-        break;
-    }
+    });
+    return () => unsub();
   }, []);
 
-  const { connected, sendMessage } = useWebSocket(handleWsEvent);
+  // Public Real-Time Firestore Listeners (Zero Login Wall — Always Synced Across Shared Links)
+  useEffect(() => {
+    const unsubProducts = onSnapshot(
+      collection(db, 'products'),
+      (snap) => {
+        setCloudConnected(true);
+        const list: Product[] = [];
+        snap.forEach((docSnap) => {
+          list.push(docSnap.data() as Product);
+        });
+        list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setCloudProducts(list);
+        setProductsLoaded(true);
+      },
+      (err) => {
+        setCloudConnected(false);
+        handleFirestoreError(err, OperationType.LIST, 'products');
+      }
+    );
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => {
-      setToast((curr) => (curr === msg ? null : curr));
-    }, 2400);
-  };
+    const unsubBanners = onSnapshot(
+      collection(db, 'banners'),
+      (snap) => {
+        const items: Array<BannerSlide & { sortOrder?: number }> = [];
+        snap.forEach((docSnap) => {
+          items.push(docSnap.data() as BannerSlide & { sortOrder?: number });
+        });
+        items.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+        setCloudBanners(items);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'banners');
+      }
+    );
+
+    const unsubCatalog = onSnapshot(
+      doc(db, 'storeCatalog', 'main'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as {
+            categories?: string[];
+            brand?: Partial<StoreBrandConfig>;
+            analyticsResetAt?: string;
+          };
+          setCloudCatalogExists(true);
+          setCloudCategories(Array.isArray(data.categories) ? data.categories : []);
+          setCloudBrand(
+            data.brand ? { ...DEFAULT_STORE_BRAND, ...data.brand } : DEFAULT_STORE_BRAND
+          );
+          setAnalyticsResetAt(data.analyticsResetAt);
+        } else {
+          setCloudCatalogExists(false);
+          setCloudCategories([]);
+          setCloudBrand(DEFAULT_STORE_BRAND);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, 'storeCatalog/main');
+      }
+    );
+
+    const unsubPay = onSnapshot(
+      doc(db, 'paymentConfig', 'main'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setCloudPaymentSettings(docSnap.data() as PaymentSettings);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, 'paymentConfig/main');
+      }
+    );
+
+    return () => {
+      unsubProducts();
+      unsubBanners();
+      unsubCatalog();
+      unsubPay();
+    };
+  }, []);
+
+  // One-time pre-seed fallback ONLY if Firestore hasn't been seeded yet
+  useEffect(() => {
+    if (!productsLoaded) return;
+    if (cloudProducts.length === 0 && !cloudCatalogExists && !fallbackSeed) {
+      let active = true;
+      fetch('/api/bootstrap?buyerId=guest', { cache: 'no-store' })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: BootstrapPayload | null) => {
+          if (active && data) {
+            setFallbackSeed(data);
+          }
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }
+  }, [productsLoaded, cloudProducts.length, cloudCatalogExists, fallbackSeed]);
+
+  // Authenticated Private Buyer Listeners (Wait for authReady && authUser)
+  useEffect(() => {
+    if (!authReady || !authUser) return;
+    const uid = authUser.uid;
+
+    const unsubProfile = onSnapshot(
+      doc(db, 'users', uid),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as {
+            id?: string;
+            name?: string;
+            email?: string;
+            phone?: string;
+            wishlist?: string[];
+          };
+          setProfile({
+            id: data.id || uid,
+            name: data.name || authUser.displayName || authUser.phoneNumber || 'Buyer',
+            email: data.email || authUser.email || '',
+            phone: data.phone || authUser.phoneNumber || '',
+          });
+          setWishlist(Array.isArray(data.wishlist) ? data.wishlist : []);
+          setProfileLoadedUid(uid);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, `users/${uid}`);
+      }
+    );
+
+    const unsubAddresses = onSnapshot(
+      collection(db, 'users', uid, 'addresses'),
+      (snap) => {
+        const list: Address[] = [];
+        snap.forEach((d) => list.push(d.data() as Address));
+        list.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+        setAddresses(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `users/${uid}/addresses`);
+      }
+    );
+
+    return () => {
+      unsubProfile();
+      unsubAddresses();
+    };
+  }, [authReady, authUser]);
+
+  // Close auth modal and complete any pending wishlist save once profile snapshot is synced
+  useEffect(() => {
+    if (authUser && authModalOpen) {
+      setAuthModalOpen(false);
+    }
+  }, [authUser, authModalOpen]);
+
+  useEffect(() => {
+    if (!authUser || !pendingWishlistId || profileLoadedUid !== authUser.uid) return;
+    const productId = pendingWishlistId;
+    setPendingWishlistId(null);
+    if (!wishlist.includes(productId)) {
+      void toggleWishlistDoc(authUser.uid, productId, wishlist, {
+        name: authUser.displayName,
+        email: authUser.email,
+        phone: authUser.phoneNumber,
+      });
+    }
+  }, [authUser, pendingWishlistId, profileLoadedUid, wishlist]);
+
+  // Orders & ChatThreads Listeners (Role-aware: Seller Admin on /seller vs Signed-in Buyer)
+  useEffect(() => {
+    if (!authReady || !authUser) return;
+    const chatScopeKey = `${authUser.uid}_${isAdminStream ? 'admin' : 'buyer'}`;
+
+    const cachedThreads = loadCachedChatThreads(chatScopeKey);
+    const cachedMsgs = loadCachedChatMessages(chatScopeKey);
+    setChatThreads(cachedThreads);
+    setThreadMessagesMap(cachedMsgs);
+    setChatThreadsLoaded(false);
+
+    const ordersSource = isAdminStream
+      ? collection(db, 'orders')
+      : query(collection(db, 'orders'), where('buyerId', '==', authUser.uid));
+
+    const unsubOrders = onSnapshot(
+      ordersSource,
+      (snap) => {
+        const list: Order[] = [];
+        snap.forEach((d) => list.push(d.data() as Order));
+        list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setOrders(list);
+        setOrdersLoadedUid(authUser.uid);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'orders');
+      }
+    );
+
+    const threadsSource = isAdminStream
+      ? collection(db, 'chatThreads')
+      : query(collection(db, 'chatThreads'), where('buyerId', '==', authUser.uid));
+
+    const unsubThreads = onSnapshot(
+      threadsSource,
+      (snap) => {
+        setChatSyncError('');
+        const list: ChatThread[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Omit<ChatThread, 'messages'> & {
+            lastMessagePreview?: string;
+            unreadByAdmin?: number;
+            unreadByBuyer?: number;
+          };
+          list.push({
+            ...data,
+            messages: [],
+          } as ChatThread);
+        });
+        list.sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
+        setChatThreads(list);
+        setChatThreadsLoaded(true);
+        safeSetStorage(`yg_chat_threads_${chatScopeKey}`, JSON.stringify(list));
+      },
+      (err) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, 'chatThreads');
+        } catch {
+          setChatSyncError(syncErrorTextRef.current);
+        }
+      }
+    );
+
+    return () => {
+      unsubOrders();
+      unsubThreads();
+    };
+  }, [authReady, authUser, isAdminStream]);
+
+  // Active Chat Thread Messages Listener (Only attached when thread doc exists in Firestore)
+  const activeListenThreadId = useMemo(() => {
+    if (!authReady || !authUser) return '';
+    if (isAdminStream) {
+      if (selectedAdminThreadId && chatThreads.some((th) => th.id === selectedAdminThreadId)) {
+        return selectedAdminThreadId;
+      }
+      return chatThreads[0]?.id || '';
+    }
+    const buyerExpectedId = `thread-${authUser.uid}`;
+    const found = chatThreads.find(
+      (th) => th.id === buyerExpectedId || th.buyerId === authUser.uid
+    );
+    return found?.id || '';
+  }, [authReady, authUser, isAdminStream, selectedAdminThreadId, chatThreads]);
+
+  useEffect(() => {
+    if (!activeListenThreadId || !authUser) return;
+    const chatScopeKey = `${authUser.uid}_${isAdminStream ? 'admin' : 'buyer'}`;
+    const msgsPath = `chatThreads/${activeListenThreadId}/messages`;
+    const unsubMsgs = onSnapshot(
+      collection(db, 'chatThreads', activeListenThreadId, 'messages'),
+      (snap) => {
+        setChatSyncError('');
+        const list: ChatMessage[] = [];
+        snap.forEach((d) => list.push(d.data() as ChatMessage));
+        list.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+        setLoadedThreadIds((prev) => ({
+          ...prev,
+          [activeListenThreadId]: true,
+        }));
+        setThreadMessagesMap((prev) => {
+          const next = {
+            ...prev,
+            [activeListenThreadId]: list,
+          };
+          safeSetStorage(`yg_chat_msgs_${chatScopeKey}`, JSON.stringify(next));
+          return next;
+        });
+      },
+      (err) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, msgsPath);
+        } catch {
+          setChatSyncError(syncErrorTextRef.current);
+        }
+      }
+    );
+    return () => unsubMsgs();
+  }, [activeListenThreadId, authUser, isAdminStream]);
+
+  // Resolved Public Storefront Collections (Cloud takes precedence; pre-seed fallback only before first cloud seed)
+  const useSeedFallback = productsLoaded && cloudProducts.length === 0 && !cloudCatalogExists;
+  const products = useMemo(
+    () => (useSeedFallback ? fallbackSeed?.products || [] : cloudProducts),
+    [useSeedFallback, fallbackSeed, cloudProducts]
+  );
+  const banners = useMemo(
+    () =>
+      cloudBanners.length > 0
+        ? cloudBanners
+        : useSeedFallback
+        ? fallbackSeed?.banners || []
+        : [],
+    [cloudBanners, useSeedFallback, fallbackSeed]
+  );
+  const categories = useMemo(() => {
+    const base =
+      cloudCategories.length > 0
+        ? cloudCategories
+        : useSeedFallback
+        ? fallbackSeed?.categories || []
+        : [];
+    const fromProducts = products.map((p) => p.category).filter(Boolean);
+    return Array.from(new Set([...base, ...fromProducts]));
+  }, [cloudCategories, useSeedFallback, fallbackSeed, products]);
+
+  const paymentSettings = useMemo(
+    () =>
+      useSeedFallback && fallbackSeed?.paymentSettings
+        ? fallbackSeed.paymentSettings
+        : cloudPaymentSettings,
+    [useSeedFallback, fallbackSeed, cloudPaymentSettings]
+  );
+
+  const brand = useMemo(
+    () =>
+      useSeedFallback && fallbackSeed?.brand
+        ? { ...DEFAULT_STORE_BRAND, ...fallbackSeed.brand }
+        : cloudBrand,
+    [useSeedFallback, fallbackSeed, cloudBrand]
+  );
+
+  useEffect(() => {
+    document.title =
+      view === 'admin'
+        ? `${brand.storeName} — ${dict.admin.title}`
+        : `${brand.storeName} — Curated Storefront & Seller Console`;
+  }, [brand.storeName, view, dict.admin.title]);
+
+  // Hydrate compact Cart Refs & Direct Buy against live Products
+  const cart: CartItem[] = useMemo(() => {
+    const out: CartItem[] = [];
+    for (const ref of cartRefs) {
+      const prod = products.find((p) => p.id === ref.productId);
+      if (prod && prod.stock > 0) {
+        out.push({
+          product: prod,
+          quantity: Math.max(1, Math.min(prod.stock, ref.quantity)),
+          variant: ref.variant || prod.variants[0] || 'Standard',
+        });
+      }
+    }
+    return out;
+  }, [cartRefs, products]);
+
+  const directBuyItem: CartItem | null = useMemo(() => {
+    if (!directBuyRef) return null;
+    const prod = products.find((p) => p.id === directBuyRef.productId);
+    if (!prod || prod.stock <= 0) return null;
+    return {
+      product: prod,
+      quantity: Math.max(1, Math.min(prod.stock, directBuyRef.quantity)),
+      variant: directBuyRef.variant || prod.variants[0] || 'Standard',
+    };
+  }, [directBuyRef, products]);
+
+  const detailProduct = useMemo(() => {
+    if (!detailProductId) return null;
+    return products.find((p) => p.id === detailProductId) || null;
+  }, [detailProductId, products]);
+
+  const hydratedChatThreads: ChatThread[] = useMemo(() => {
+    return chatThreads.map((th) => ({
+      ...th,
+      messages: threadMessagesMap[th.id] || th.messages || [],
+    }));
+  }, [chatThreads, threadMessagesMap]);
+
+  // Auth Actions
+  const handleGoogleSignIn = useCallback(async () => {
+    setAuthUiError('');
+    await signInWithGoogle();
+  }, []);
+
+  const handleSignOut = useCallback(async () => {
+    await signOutUser();
+  }, []);
 
   // Cart Handlers
   const handleAddToBag = (product: Product, variant?: string) => {
     if (product.stock <= 0) return;
     const chosenVariant = variant || product.variants[0] || 'Standard';
-    setCart((prev) => {
+    setCartRefs((prev) => {
       const existing = prev.find(
-        (c) => c.product.id === product.id && c.variant === chosenVariant
+        (c) => c.productId === product.id && c.variant === chosenVariant
       );
       if (existing) {
         return prev.map((c) =>
-          c.product.id === product.id && c.variant === chosenVariant
+          c.productId === product.id && c.variant === chosenVariant
             ? { ...c, quantity: Math.min(product.stock, c.quantity + 1) }
             : c
         );
       }
-      return [...prev, { product, quantity: 1, variant: chosenVariant }];
+      return [...prev, { productId: product.id, quantity: 1, variant: chosenVariant }];
     });
     showToast(`${lang === 'mm' ? product.nameMm : product.name} added to bag`);
   };
@@ -319,118 +747,137 @@ export default function App() {
   const handleBuyNow = (product: Product, variant?: string) => {
     if (product.stock <= 0) return;
     const chosenVariant = variant || product.variants[0] || 'Standard';
-    setDirectBuyItem({ product, quantity: 1, variant: chosenVariant });
+    setDirectBuyRef({ productId: product.id, quantity: 1, variant: chosenVariant });
     setCartOpen(true);
   };
 
   const handleUpdateDirectBuyQty = (delta: number) => {
-    setDirectBuyItem((prev) => {
+    setDirectBuyRef((prev) => {
       if (!prev) return null;
-      const nextQty = Math.max(1, Math.min(prev.product.stock, prev.quantity + delta));
+      const prod = products.find((p) => p.id === prev.productId);
+      const maxStock = prod ? prod.stock : 99;
+      const nextQty = Math.max(1, Math.min(maxStock, prev.quantity + delta));
       return { ...prev, quantity: nextQty };
     });
   };
 
   const handleUpdateQty = (productId: string, variant: string, delta: number) => {
-    setCart((prev) =>
+    const prod = products.find((p) => p.id === productId);
+    const maxStock = prod ? prod.stock : 99;
+    setCartRefs((prev) =>
       prev
         .map((c) => {
-          if (c.product.id === productId && c.variant === variant) {
+          if (c.productId === productId && c.variant === variant) {
             const nextQty = c.quantity + delta;
             if (nextQty <= 0) return null;
-            return { ...c, quantity: Math.min(c.product.stock, nextQty) };
+            return { ...c, quantity: Math.min(maxStock, nextQty) };
           }
           return c;
         })
-        .filter(Boolean) as CartItem[]
+        .filter(Boolean) as CartRef[]
     );
   };
 
   const handleRemoveCartItem = (productId: string, variant: string) => {
-    setCart((prev) =>
-      prev.filter((c) => !(c.product.id === productId && c.variant === variant))
+    setCartRefs((prev) =>
+      prev.filter((c) => !(c.productId === productId && c.variant === variant))
     );
   };
 
   // Wishlist Toggle
   const handleToggleWishlist = async (productId: string) => {
-    const res = await fetch('/api/wishlist/toggle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ productId, buyerId }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { wishlist: string[] };
-      setWishlist(data.wishlist);
+    if (!authUser) {
+      setPendingWishlistId(productId);
+      setAuthModalOpen(true);
+      return;
     }
+    await toggleWishlistDoc(authUser.uid, productId, wishlist, {
+      name: authUser.displayName,
+      email: authUser.email,
+      phone: authUser.phoneNumber,
+    });
   };
 
   // Chat Actions
-  const buyerThread =
-    chatThreads.find((th) => th.id === `thread-${buyerId}` || th.buyerId === buyerId) ||
-    undefined;
+  const buyerThread = authUser
+    ? hydratedChatThreads.find(
+        (th) => th.id === `thread-${authUser.uid}` || th.buyerId === authUser.uid
+      )
+    : undefined;
+
   const unreadBuyerCount = buyerThread
-    ? buyerThread.messages.filter((m) => m.senderRole === 'admin' && !m.read).length
+    ? Math.max(
+        buyerThread.messages.filter((m) => m.senderRole === 'admin' && !m.read).length,
+        Number((buyerThread as ChatThread & { unreadByBuyer?: number }).unreadByBuyer || 0)
+      )
     : 0;
 
   const openChatWithContext = (tag?: string) => {
     setChatContext(tag);
     setChatOpen(true);
-    if (buyerThread) {
-      sendMessage('chat:read', { threadId: buyerThread.id, readerRole: 'buyer' });
+    if (authUser && buyerThread && unreadBuyerCount > 0) {
+      void markThreadMessagesRead(buyerThread.id, 'buyer').catch(() => undefined);
     }
   };
 
-  const handleSendBuyerChat = (text: string, contextTag?: string) => {
-    const threadId = buyerThread?.id || `thread-${buyerId}`;
-    const senderName = profile.name || 'Guest Buyer';
-    const sent = sendMessage('chat:send', {
+  useEffect(() => {
+    if (chatOpen && authUser && buyerThread && unreadBuyerCount > 0) {
+      void markThreadMessagesRead(buyerThread.id, 'buyer').catch(() => undefined);
+    }
+  }, [chatOpen, authUser, buyerThread?.id, unreadBuyerCount]);
+
+  const handleSendBuyerChat = async (text: string, contextTag?: string, imageUrl?: string) => {
+    if (!authUser) {
+      throw new Error('AUTH_REQUIRED');
+    }
+    const threadId = buyerThread?.id || `thread-${authUser.uid}`;
+    const senderName =
+      profile.name && profile.name !== 'Guest Buyer'
+        ? profile.name
+        : authUser.displayName || authUser.phoneNumber || 'Buyer';
+    await sendChatMessageDoc({
       threadId,
-      buyerId,
+      buyerId: authUser.uid,
+      buyerName: senderName,
+      buyerPhone: profile.phone || authUser.phoneNumber || '',
       senderRole: 'buyer',
+      senderUid: authUser.uid,
       senderName,
       text,
+      imageUrl,
       contextTag,
     });
-    if (!sent) {
-      fetch('/api/chat/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          threadId,
-          buyerId,
-          senderRole: 'buyer',
-          senderName,
-          text,
-          contextTag,
-        }),
-      });
-    }
   };
 
-  const handleSendAdminChat = (threadId: string, text: string) => {
-    const sent = sendMessage('chat:send', {
-      threadId,
-      senderRole: 'admin',
-      senderName: 'Su&KoKo Support',
-      text,
-    });
-    if (!sent) {
-      fetch('/api/chat/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          threadId,
-          senderRole: 'admin',
-          senderName: 'Su&KoKo Support',
-          text,
-        }),
-      });
+  const handleSendAdminChat = async (threadId: string, text: string, imageUrl?: string) => {
+    if (!authUser || !isSellerAdmin) {
+      throw new Error('ADMIN_REQUIRED');
     }
+    const th = chatThreads.find((c) => c.id === threadId);
+    await sendChatMessageDoc({
+      threadId,
+      buyerId: th?.buyerId || threadId.replace(/^thread-/, ''),
+      buyerName: th?.buyerName || 'Buyer',
+      buyerPhone: th?.buyerPhone || '',
+      senderRole: 'admin',
+      senderUid: authUser.uid,
+      senderName: `${brand.storeName || 'Shoptopia'} Support`,
+      text,
+      imageUrl,
+    });
+  };
+
+  const handleDeleteChatMessage = async (threadId: string, messageId: string) => {
+    if (!authUser) {
+      throw new Error('AUTH_REQUIRED');
+    }
+    await deleteChatMessageDoc(threadId, messageId);
   };
 
   const handleMarkThreadRead = (threadId: string) => {
-    sendMessage('chat:read', { threadId, readerRole: 'admin' });
+    if (!authUser || !isSellerAdmin) return;
+    if (!chatThreads.some((c) => c.id === threadId)) return;
+    void markThreadMessagesRead(threadId, 'admin').catch(() => undefined);
   };
 
   // Popular & Filtered Catalog
@@ -456,13 +903,14 @@ export default function App() {
     return [...list].sort((a, b) => {
       if (sortBy === 'price-asc') return a.price - b.price;
       if (sortBy === 'price-desc') return b.price - a.price;
-      if (sortBy === 'newest') return b.createdAt.localeCompare(a.createdAt);
-      return b.soldCount - a.soldCount;
+      if (sortBy === 'newest') return (b.createdAt || '').localeCompare(a.createdAt || '');
+      return (b.soldCount || 0) - (a.soldCount || 0);
     });
   }, [products, selectedCategory, popularOnly, searchQuery, sortBy]);
 
   const totalBagCount = cart.reduce((s, c) => s + c.quantity, 0);
-  const myOrders = orders.filter((o) => o.buyerId === profile.id);
+  const myOrders = authUser ? orders.filter((o) => o.buyerId === authUser.uid) : [];
+  const loading = !productsLoaded && !fallbackSeed;
 
   const jumpToCategory = (cat: string) => {
     navigate('shop');
@@ -472,9 +920,14 @@ export default function App() {
     }, 60);
   };
 
+  const handleUtilitySignIn = () => {
+    setAuthUiError('');
+    setAuthModalOpen(true);
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-[#F8F9FA] text-zinc-900 dark:bg-[#0D0F12] dark:text-zinc-100 transition-colors">
-      {/* Buyer Storefront Navigation Bar (Hidden on dedicated /admin route) */}
+      {/* Buyer Storefront Navigation Bar (Hidden on dedicated /seller or /admin route) */}
       {view !== 'admin' ? (
         <>
           <header className="sticky top-0 z-40 border-b border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-[#12151B]/95 backdrop-blur-sm">
@@ -486,9 +939,19 @@ export default function App() {
                   e.preventDefault();
                   navigate('shop');
                 }}
-                className="font-display text-lg font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-2 font-display text-lg font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap shrink-0 cursor-pointer"
               >
-                Su&KoKo
+                {brand.logoImage && (
+                  <img
+                    src={brand.logoImage}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    onError={(e) => e.currentTarget.classList.add('hidden')}
+                    onLoad={(e) => e.currentTarget.classList.remove('hidden')}
+                    className="h-7 w-7 rounded-md object-cover border border-zinc-200 dark:border-zinc-700"
+                  />
+                )}
+                <span>{brand.storeName}</span>
               </a>
 
               {/* Zone 2: Concise Single-line Buyer Nav Links */}
@@ -530,7 +993,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setDirectBuyItem(null);
+                  setDirectBuyRef(null);
                   setCartOpen(true);
                 }}
                 className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs sm:text-sm font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -550,7 +1013,31 @@ export default function App() {
                 {dict.home.freeDeliveryBanner}
               </span>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
+                {isAuthenticated ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate('profile')}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 px-2.5 py-1 font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <UserIcon className="w-3.5 h-3.5" />
+                    <span className="max-w-[120px] truncate">
+                      {profile.name !== 'Guest Buyer'
+                        ? profile.name
+                        : authUser?.displayName || authUser?.phoneNumber || dict.nav.profile}
+                    </span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleUtilitySignIn}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 px-2.5 py-1 font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>{dict.auth.signInOrUp}</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setLang((l) => (l === 'en' ? 'mm' : 'en'))}
@@ -591,12 +1078,22 @@ export default function App() {
         /* Dedicated Seller Admin Header */
         <header className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#12151B]">
           <div className="mx-auto max-w-[1280px] px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <span className="font-display text-base font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap">
-                {dict.brand}
+            <div className="flex items-center gap-2.5 min-w-0">
+              {brand.logoImage && (
+                <img
+                  src={brand.logoImage}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={(e) => e.currentTarget.classList.add('hidden')}
+                  onLoad={(e) => e.currentTarget.classList.remove('hidden')}
+                  className="h-6 w-6 rounded object-cover border border-zinc-200 dark:border-zinc-700 shrink-0"
+                />
+              )}
+              <span className="font-display text-base font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap truncate">
+                {brand.storeName}
               </span>
               <span className="text-zinc-300 dark:text-zinc-700">/</span>
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 whitespace-nowrap">
                 {dict.admin.title}
               </span>
             </div>
@@ -626,7 +1123,7 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="flex-1 mx-auto w-full max-w-[1280px] px-4 sm:px-6 py-8">
-        {loading ? (
+        {loading || (view === 'admin' && !authReady) ? (
           <div className="space-y-8">
             <div className="h-72 rounded-xl bg-zinc-200 dark:bg-zinc-800 animate-pulse" />
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -639,89 +1136,152 @@ export default function App() {
             </div>
           </div>
         ) : view === 'admin' ? (
-          <AdminDashboard
-            lang={lang}
-            products={products}
-            categories={categories}
-            banners={banners}
-            orders={orders}
-            chatThreads={chatThreads}
-            paymentSettings={paymentSettings}
-            analyticsResetAt={analyticsResetAt}
-            connected={connected}
-            onExitAdmin={() => navigate('shop')}
-            onProductCreated={(prod) =>
-              setProducts((prev) => (prev.some((p) => p.id === prod.id) ? prev : [prod, ...prev]))
-            }
-            onProductUpdated={(prod) =>
-              setProducts((prev) => prev.map((p) => (p.id === prod.id ? prod : p)))
-            }
-            onProductDeleted={(id) => setProducts((prev) => prev.filter((p) => p.id !== id))}
-            onOrderUpdated={(ord) =>
-              setOrders((prev) => prev.map((o) => (o.id === ord.id ? ord : o)))
-            }
-            onBannersUpdated={setBanners}
-            onCategoriesUpdated={(payload) => {
-              setCategories(payload.categories);
-              setProducts(payload.products);
-              setBanners(payload.banners);
-            }}
-            onPaymentSettingsUpdated={setPaymentSettings}
-            onAnalyticsReset={(payload) => {
-              setAnalyticsResetAt(payload.analyticsResetAt);
-              setOrders(payload.orders);
-              setProducts(payload.products);
-            }}
-            onSendAdminChat={handleSendAdminChat}
-            onMarkThreadRead={handleMarkThreadRead}
-          />
+          !authUser ? (
+            <div className="max-w-md mx-auto my-12 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-8 space-y-5 shadow-sm">
+              <div className="flex items-center gap-2.5 text-zinc-900 dark:text-zinc-100">
+                <ShieldCheck className="w-5 h-5" />
+                <h1 className="font-display text-lg font-bold">{dict.auth.sellerGateTitle}</h1>
+              </div>
+              <p className="text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed">
+                {dict.auth.sellerGateDesc}
+              </p>
+              {authUiError && (
+                <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                  {authUiError}
+                </p>
+              )}
+              <div className="flex flex-col gap-2.5">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setAuthUiError('');
+                    try {
+                      await handleGoogleSignIn();
+                    } catch {
+                      setAuthUiError(dict.auth.popupError);
+                    }
+                  }}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-5 py-2.5 text-xs font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 cursor-pointer"
+                >
+                  <LogIn className="w-4 h-4" />
+                  <span>{dict.auth.signInGoogle}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('shop')}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 px-4 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer"
+                >
+                  {dict.admin.backToStore}
+                </button>
+              </div>
+            </div>
+          ) : !isSellerAdmin ? (
+            <div className="max-w-md mx-auto my-12 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-8 space-y-5 shadow-sm">
+              <h1 className="font-display text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                {dict.auth.sellerGateTitle}
+              </h1>
+              <p className="text-xs text-red-600 dark:text-red-400 leading-relaxed">
+                {dict.auth.sellerUnauthorized} ({authUser.email})
+              </p>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => void handleSignOut()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>{dict.auth.signOut}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('shop')}
+                  className="rounded-lg border border-zinc-200 dark:border-zinc-700 px-4 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 cursor-pointer"
+                >
+                  {dict.admin.backToStore}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <AdminDashboard
+              lang={lang}
+              adminEmail={authUser.email}
+              products={products}
+              categories={categories}
+              banners={banners}
+              orders={orders}
+              chatThreads={hydratedChatThreads}
+              activeThreadId={activeListenThreadId}
+              paymentSettings={paymentSettings}
+              brand={brand}
+              analyticsResetAt={analyticsResetAt}
+              connected={cloudConnected}
+              chatSyncError={chatSyncError}
+              loadingActiveThread={Boolean(activeListenThreadId && !loadedThreadIds[activeListenThreadId])}
+              onExitAdmin={() => navigate('shop')}
+              onSignOut={() => void handleSignOut()}
+              onSelectThread={setSelectedAdminThreadId}
+              onSendAdminChat={handleSendAdminChat}
+              onDeleteAdminMessage={handleDeleteChatMessage}
+              onMarkThreadRead={handleMarkThreadRead}
+            />
+          )
         ) : view === 'wishlist' ? (
           <WishlistView
+            isAuthenticated={isAuthenticated}
             products={products}
             wishlistIds={wishlist}
             lang={lang}
-            onRemoveWishlist={handleToggleWishlist}
+            layout={buyerProductLayout}
+            onChangeLayout={updateBuyerProductLayout}
+            onSignInGoogle={handleGoogleSignIn}
+            onRemoveWishlist={(id) => void handleToggleWishlist(id)}
             onMoveToBag={(prod) => {
               handleAddToBag(prod);
-              handleToggleWishlist(prod.id);
+              void handleToggleWishlist(prod.id);
             }}
             onBuyNow={(prod) => handleBuyNow(prod)}
-            onOpenDetail={setDetailProduct}
+            onOpenDetail={(prod) => setDetailProductId(prod.id)}
           />
         ) : view === 'orders' ? (
           <OrdersView
+            isAuthenticated={isAuthenticated}
+            loading={Boolean(authUser) && ordersLoadedUid !== authUser?.uid}
             orders={myOrders}
+            products={products}
             lang={lang}
+            onSignInGoogle={handleGoogleSignIn}
             onChatAboutOrder={(ord) => openChatWithContext(`Order #${ord.id}`)}
           />
         ) : view === 'profile' ? (
           <ProfileView
+            isAuthenticated={isAuthenticated}
+            authEmail={authUser?.email}
+            authName={authUser?.displayName}
+            authPhone={authUser?.phoneNumber}
             buyerId={buyerId}
             profile={profile}
             addresses={addresses}
+            ordersCount={myOrders.length}
+            wishlistCount={wishlist.length}
+            chatCount={buyerThread?.messages.length || 0}
             lang={lang}
-            onProfileSaved={setProfile}
-            onAddressesUpdated={setAddresses}
-            onAccountSwitched={(nextBuyerId, data) => {
-              setBuyerId(nextBuyerId);
-              setProfile(data.profile);
-              setAddresses(data.addresses);
-              setWishlist(data.wishlist);
-              setOrders(data.orders);
-              setChatThreads(data.chatThreads);
-              try {
-                const saved = localStorage.getItem(`yg_cart_${nextBuyerId}`);
-                setCart(saved ? (JSON.parse(saved) as CartItem[]) : []);
-              } catch {
-                setCart([]);
-              }
+            onSignInGoogle={handleGoogleSignIn}
+            onSignOut={handleSignOut}
+            onSwitchAccount={() => {
+              void handleSignOut().then(() => setAuthModalOpen(true));
             }}
+            onGoToOrders={() => navigate('orders')}
+            onGoToWishlist={() => navigate('wishlist')}
+            onOpenChat={() => openChatWithContext()}
           />
         ) : (
-          /* STOREFRONT HOME VIEW (Strictly 3 sections: Banner Slider -> Popular Items -> Filterable Catalog) */
+          /* STOREFRONT HOME VIEW (Logo Banner + Banner Slider -> Popular Items -> Filterable Catalog) */
           <div className="space-y-12">
-            {/* 1. Banner Slider */}
-            <BannerSlider banners={banners} lang={lang} onSelectCategory={jumpToCategory} />
+            {/* 1. Compact Home Logo Banner & Hero Slider */}
+            <div className="space-y-4">
+              <StoreLogoBanner brand={brand} lang={lang} />
+              <BannerSlider banners={banners} lang={lang} onSelectCategory={jumpToCategory} />
+            </div>
 
             {/* 2. Popular Items Showcase */}
             {popularProducts.length > 0 && (
@@ -735,19 +1295,57 @@ export default function App() {
                       {dict.home.popularSub}
                     </p>
                   </div>
+
+                  <div className="inline-flex items-center rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#16191F] p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => updateBuyerProductLayout('grid2')}
+                      aria-label={dict.home.grid2View}
+                      title={dict.home.grid2View}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                        buyerProductLayout === 'grid2'
+                          ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                          : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{dict.home.grid2View}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateBuyerProductLayout('list')}
+                      aria-label={dict.home.listView}
+                      title={dict.home.listView}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                        buyerProductLayout === 'list'
+                          ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                          : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{dict.home.listView}</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div
+                  className={
+                    buyerProductLayout === 'list'
+                      ? 'grid grid-cols-1 lg:grid-cols-2 gap-3.5 sm:gap-5'
+                      : 'grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6'
+                  }
+                >
                   {popularProducts.map((product) => (
                     <ProductCard
                       key={product.id}
                       product={product}
                       lang={lang}
+                      layout={buyerProductLayout}
                       isWishlisted={wishlist.includes(product.id)}
-                      onToggleWishlist={handleToggleWishlist}
+                      onToggleWishlist={(id) => void handleToggleWishlist(id)}
                       onAddToBag={handleAddToBag}
                       onBuyNow={handleBuyNow}
-                      onOpenDetail={setDetailProduct}
+                      onOpenDetail={(prod) => setDetailProductId(prod.id)}
                     />
                   ))}
                 </div>
@@ -811,6 +1409,37 @@ export default function App() {
                     <option value="price-desc">{dict.home.sortPriceDesc}</option>
                     <option value="newest">{dict.home.sortNewest}</option>
                   </select>
+
+                  <div className="inline-flex items-center rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#16191F] p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => updateBuyerProductLayout('grid2')}
+                      aria-label={dict.home.grid2View}
+                      title={dict.home.grid2View}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                        buyerProductLayout === 'grid2'
+                          ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                          : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{dict.home.grid2View}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateBuyerProductLayout('list')}
+                      aria-label={dict.home.listView}
+                      title={dict.home.listView}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                        buyerProductLayout === 'list'
+                          ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                          : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{dict.home.listView}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -854,17 +1483,24 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div
+                  className={
+                    buyerProductLayout === 'list'
+                      ? 'grid grid-cols-1 lg:grid-cols-2 gap-3.5 sm:gap-5'
+                      : 'grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6'
+                  }
+                >
                   {filteredCatalog.map((product) => (
                     <ProductCard
                       key={product.id}
                       product={product}
                       lang={lang}
+                      layout={buyerProductLayout}
                       isWishlisted={wishlist.includes(product.id)}
-                      onToggleWishlist={handleToggleWishlist}
+                      onToggleWishlist={(id) => void handleToggleWishlist(id)}
                       onAddToBag={handleAddToBag}
                       onBuyNow={handleBuyNow}
-                      onOpenDetail={setDetailProduct}
+                      onOpenDetail={(prod) => setDetailProductId(prod.id)}
                     />
                   ))}
                 </div>
@@ -880,7 +1516,7 @@ export default function App() {
           <div className="mx-auto max-w-[1280px] px-4 sm:px-6 py-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-zinc-500 dark:text-zinc-400">
             <div>
               <span className="font-display font-semibold text-zinc-900 dark:text-zinc-100">
-                Su&KoKo
+                {brand.storeName}
               </span>
               <span className="mx-2">·</span>
               <span>Yangon & Mandalay Retail · KPay, WavePay & Bank Transfer Accepted</span>
@@ -936,8 +1572,8 @@ export default function App() {
         product={detailProduct}
         lang={lang}
         isWishlisted={detailProduct ? wishlist.includes(detailProduct.id) : false}
-        onClose={() => setDetailProduct(null)}
-        onToggleWishlist={handleToggleWishlist}
+        onClose={() => setDetailProductId(null)}
+        onToggleWishlist={(id) => void handleToggleWishlist(id)}
         onAddToBag={handleAddToBag}
         onBuyNow={handleBuyNow}
         onAskSeller={(prod) =>
@@ -948,6 +1584,7 @@ export default function App() {
       {/* Cart & Checkout Slide-over Drawer */}
       <CartCheckoutDrawer
         open={cartOpen}
+        isAuthenticated={isAuthenticated}
         lang={lang}
         buyerId={buyerId}
         profile={profile}
@@ -955,31 +1592,41 @@ export default function App() {
         directBuyItem={directBuyItem}
         addresses={addresses}
         paymentSettings={paymentSettings}
+        onSignInGoogle={handleGoogleSignIn}
         onClose={() => setCartOpen(false)}
         onUpdateQty={handleUpdateQty}
         onUpdateDirectBuyQty={handleUpdateDirectBuyQty}
-        onCancelDirectBuy={() => setDirectBuyItem(null)}
+        onCancelDirectBuy={() => setDirectBuyRef(null)}
         onRemoveItem={handleRemoveCartItem}
-        onClearCart={() => setCart([])}
-        onAddressesUpdated={setAddresses}
+        onClearCart={() => setCartRefs([])}
         onGoToProfile={() => navigate('profile')}
         onGoToOrders={() => navigate('orders')}
-        onOrderCreated={(ord) =>
-          setOrders((prev) => (prev.some((o) => o.id === ord.id) ? prev : [ord, ...prev]))
-        }
       />
 
       {/* Real-Time Buyer Chat Drawer */}
       <LiveChatWidget
         open={chatOpen}
-        connected={connected}
+        isAuthenticated={isAuthenticated}
+        connected={cloudConnected}
+        loadingHistory={Boolean(
+          authUser &&
+            (!chatThreadsLoaded ||
+              (buyerThread && !loadedThreadIds[buyerThread.id]))
+        )}
+        syncError={chatSyncError}
         lang={lang}
         thread={buyerThread}
-        buyerName={profile.name}
+        buyerName={
+          profile.name !== 'Guest Buyer'
+            ? profile.name
+            : authUser?.displayName || authUser?.phoneNumber || 'Buyer'
+        }
         contextTag={chatContext}
+        onSignInGoogle={handleGoogleSignIn}
         onClearContext={() => setChatContext(undefined)}
         onClose={() => setChatOpen(false)}
         onSendMessage={handleSendBuyerChat}
+        onDeleteMessage={handleDeleteChatMessage}
       />
 
       {/* Floating Chat Trigger (Buyer Mode when closed) */}
@@ -998,6 +1645,47 @@ export default function App() {
             </span>
           )}
         </button>
+      )}
+
+      {/* Buyer Sign-In / Sign-Up Modal (Phone SMS + Google) */}
+      {authModalOpen && !isAuthenticated && view !== 'admin' && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={dict.auth.signInOrUp}
+          onClick={() => {
+            setAuthModalOpen(false);
+            setPendingWishlistId(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-6 shadow-2xl relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setAuthModalOpen(false);
+                setPendingWishlistId(null);
+              }}
+              aria-label="Close sign-in dialog"
+              className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="pr-8">
+              <BuyerAuthPanel
+                lang={lang}
+                onSignInGoogle={handleGoogleSignIn}
+                onAuthSuccess={() => setAuthModalOpen(false)}
+                title={dict.auth.buyerGateTitle}
+                subtitle={dict.auth.buyerGateDesc}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Brief Non-Intrusive Feedback Toast */}

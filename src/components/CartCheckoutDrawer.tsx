@@ -25,9 +25,12 @@ import type {
 import { formatMMK } from '../utils/format';
 import { t } from '../i18n';
 import { SmartImage } from './SmartImage';
+import { BuyerAuthPanel } from './BuyerAuthPanel';
+import { createOrderTransaction, saveAddressDoc } from '../services/firestoreStore';
 
 interface CartCheckoutDrawerProps {
   open: boolean;
+  isAuthenticated: boolean;
   lang: Language;
   buyerId: string;
   profile: UserProfile;
@@ -35,20 +38,20 @@ interface CartCheckoutDrawerProps {
   directBuyItem: CartItem | null;
   addresses: Address[];
   paymentSettings: PaymentSettings;
+  onSignInGoogle: () => Promise<void>;
   onClose: () => void;
   onUpdateQty: (productId: string, variant: string, delta: number) => void;
   onUpdateDirectBuyQty: (delta: number) => void;
   onCancelDirectBuy: () => void;
   onRemoveItem: (productId: string, variant: string) => void;
   onClearCart: () => void;
-  onAddressesUpdated: (addresses: Address[]) => void;
   onGoToProfile: () => void;
   onGoToOrders: () => void;
-  onOrderCreated: (order: Order) => void;
 }
 
 export function CartCheckoutDrawer({
   open,
+  isAuthenticated,
   lang,
   buyerId,
   profile,
@@ -56,16 +59,15 @@ export function CartCheckoutDrawer({
   directBuyItem,
   addresses,
   paymentSettings,
+  onSignInGoogle,
   onClose,
   onUpdateQty,
   onUpdateDirectBuyQty,
   onCancelDirectBuy,
   onRemoveItem,
   onClearCart,
-  onAddressesUpdated,
   onGoToProfile,
   onGoToOrders,
-  onOrderCreated,
 }: CartCheckoutDrawerProps) {
   const enabledBanks = paymentSettings.bankAccounts.filter((b) => b.enabled);
   const [step, setStep] = useState<'bag' | 'checkout' | 'confirmed'>('bag');
@@ -136,6 +138,10 @@ export function CartCheckoutDrawer({
   };
 
   const handleSaveQuickAddress = async () => {
+    if (!isAuthenticated) {
+      setErrorMsg(dict.auth.buyerGateTitle);
+      return;
+    }
     if (
       !quickAddr.recipientName.trim() ||
       !quickAddr.phone.trim() ||
@@ -148,11 +154,9 @@ export function CartCheckoutDrawer({
     setErrorMsg('');
     setSavingQuickAddr(true);
     try {
-      const res = await fetch('/api/addresses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          buyerId,
+      await saveAddressDoc(
+        buyerId,
+        {
           label: 'Home',
           recipientName: quickAddr.recipientName.trim(),
           phone: quickAddr.phone.trim(),
@@ -160,12 +164,12 @@ export function CartCheckoutDrawer({
           township: quickAddr.township.trim(),
           streetAddress: quickAddr.streetAddress.trim(),
           isDefault: true,
-        }),
-      });
-      if (res.ok) {
-        const updated = (await res.json()) as Address[];
-        onAddressesUpdated(updated);
-      }
+        },
+        addresses,
+        { name: profile.name, email: profile.email }
+      );
+    } catch {
+      setErrorMsg('Could not save address. Please try again.');
     } finally {
       setSavingQuickAddr(false);
     }
@@ -173,7 +177,12 @@ export function CartCheckoutDrawer({
 
   const handlePlaceOrder = async () => {
     setErrorMsg('');
-    let addressToUse = selectedAddress;
+    if (!isAuthenticated) {
+      setErrorMsg(dict.auth.buyerGateTitle);
+      return;
+    }
+
+    let addressToUse: Address | undefined = selectedAddress;
     if (!addressToUse) {
       if (
         quickAddr.recipientName.trim() &&
@@ -181,25 +190,21 @@ export function CartCheckoutDrawer({
         quickAddr.township.trim() &&
         quickAddr.streetAddress.trim()
       ) {
-        const resAddr = await fetch('/api/addresses', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            buyerId,
-            label: 'Home',
-            recipientName: quickAddr.recipientName.trim(),
-            phone: quickAddr.phone.trim(),
-            city: quickAddr.city.trim() || 'Yangon',
-            township: quickAddr.township.trim(),
-            streetAddress: quickAddr.streetAddress.trim(),
-            isDefault: true,
-          }),
+        const inlineAddr: Address = {
+          id: `addr-${Date.now()}`,
+          label: 'Home',
+          recipientName: quickAddr.recipientName.trim(),
+          phone: quickAddr.phone.trim(),
+          city: quickAddr.city.trim() || 'Yangon',
+          township: quickAddr.township.trim(),
+          streetAddress: quickAddr.streetAddress.trim(),
+          isDefault: true,
+        };
+        await saveAddressDoc(buyerId, inlineAddr, addresses, {
+          name: profile.name,
+          email: profile.email,
         });
-        if (resAddr.ok) {
-          const updatedAddrs = (await resAddr.json()) as Address[];
-          onAddressesUpdated(updatedAddrs);
-          addressToUse = updatedAddrs[0];
-        }
+        addressToUse = inlineAddr;
       }
     }
     if (!addressToUse) {
@@ -210,44 +215,37 @@ export function CartCheckoutDrawer({
       setErrorMsg('Please enter your transaction reference ID or last 6 digits.');
       return;
     }
+
     setSubmitting(true);
     try {
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          buyerId,
-          customerName:
-            addressToUse.recipientName ||
-            (profile.name !== 'Guest Buyer' ? profile.name : ''),
-          customerPhone: addressToUse.phone || profile.phone,
-          items: activeItems.map((c) => ({
-            productId: c.product.id,
-            quantity: c.quantity,
-            variant: c.variant,
-          })),
-          shippingAddress: addressToUse,
-          paymentMethod,
-          paymentReference: txRef.trim(),
-          bankName: paymentMethod === 'BankTransfer' ? selectedBank : undefined,
-        }),
+      const order = await createOrderTransaction({
+        uid: buyerId,
+        customerName:
+          addressToUse.recipientName || (profile.name !== 'Guest Buyer' ? profile.name : ''),
+        customerPhone: addressToUse.phone || profile.phone,
+        shippingAddress: addressToUse,
+        items: activeItems.map((c) => ({
+          productId: c.product.id,
+          quantity: c.quantity,
+          variant: c.variant,
+        })),
+        paymentMethod,
+        paymentReference: txRef.trim(),
+        bankName: paymentMethod === 'BankTransfer' ? selectedBank : undefined,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'Could not place order.');
-        return;
-      }
-      onOrderCreated(data as Order);
+
       if (isDirectBuy) {
         onCancelDirectBuy();
       } else {
         onClearCart();
       }
-      setPlacedOrder(data as Order);
+      setPlacedOrder(order);
       setTxRef('');
       setStep('confirmed');
-    } catch {
-      setErrorMsg('Network error placing order. Please try again.');
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error && err.message ? err.message : 'Could not place order. Please try again.'
+      );
     } finally {
       setSubmitting(false);
     }
@@ -482,109 +480,125 @@ export function CartCheckoutDrawer({
                 </div>
               )}
 
-              {/* Saved Delivery Address */}
-              <div>
-                <div className="flex items-center justify-between mb-2.5">
-                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-                    <MapPin className="w-4 h-4 text-zinc-500" />
-                    <span>{dict.cart.deliveryAddress}</span>
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleDrawerClose();
-                      onGoToProfile();
-                    }}
-                    className="text-xs font-medium text-zinc-600 dark:text-zinc-300 underline hover:text-zinc-900 dark:hover:text-white cursor-pointer"
-                  >
-                    {dict.cart.addAddressQuick}
-                  </button>
+              {!isAuthenticated ? (
+                <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/60 p-5">
+                  <BuyerAuthPanel
+                    lang={lang}
+                    onSignInGoogle={onSignInGoogle}
+                    compact
+                    title={dict.auth.buyerGateTitle}
+                    subtitle={dict.auth.buyerGateDesc}
+                  />
                 </div>
-
-                {addresses.length === 0 ? (
-                  <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 p-4 space-y-2.5">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        value={quickAddr.recipientName}
-                        onChange={(e) =>
-                          setQuickAddr({ ...quickAddr, recipientName: e.target.value })
-                        }
-                        placeholder={dict.profile.recipientField}
-                        className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
-                      />
-                      <input
-                        type="tel"
-                        value={quickAddr.phone}
-                        onChange={(e) => setQuickAddr({ ...quickAddr, phone: e.target.value })}
-                        placeholder={dict.profile.phone}
-                        className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-mono-tabular text-zinc-900 dark:text-zinc-100"
-                      />
-                      <input
-                        type="text"
-                        value={quickAddr.city}
-                        onChange={(e) => setQuickAddr({ ...quickAddr, city: e.target.value })}
-                        placeholder={dict.profile.cityField}
-                        className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
-                      />
-                      <input
-                        type="text"
-                        value={quickAddr.township}
-                        onChange={(e) => setQuickAddr({ ...quickAddr, township: e.target.value })}
-                        placeholder={dict.profile.townshipField}
-                        className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
-                      />
-                    </div>
-                    <input
-                      type="text"
-                      value={quickAddr.streetAddress}
-                      onChange={(e) =>
-                        setQuickAddr({ ...quickAddr, streetAddress: e.target.value })
-                      }
-                      placeholder={dict.profile.streetField}
-                      className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
-                    />
-                    <button
-                      type="button"
-                      disabled={savingQuickAddr}
-                      onClick={handleSaveQuickAddress}
-                      className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
-                    >
-                      {dict.profile.saveAddress}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {addresses.map((addr) => (
-                      <label
-                        key={addr.id}
-                        className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
-                          selectedAddrId === addr.id
-                            ? 'border-zinc-900 bg-zinc-50 dark:border-zinc-100 dark:bg-zinc-800/60'
-                            : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700'
-                        }`}
+              ) : (
+                <>
+                  {/* Saved Delivery Address */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2.5">
+                      <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                        <MapPin className="w-4 h-4 text-zinc-500" />
+                        <span>{dict.cart.deliveryAddress}</span>
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleDrawerClose();
+                          onGoToProfile();
+                        }}
+                        className="text-xs font-medium text-zinc-600 dark:text-zinc-300 underline hover:text-zinc-900 dark:hover:text-white cursor-pointer"
                       >
-                        <input
-                          type="radio"
-                          name="deliveryAddress"
-                          checked={selectedAddrId === addr.id}
-                          onChange={() => setSelectedAddrId(addr.id)}
-                          className="mt-1 accent-zinc-900 dark:accent-zinc-100"
-                        />
-                        <div className="text-xs space-y-0.5">
-                          <div className="font-semibold text-zinc-900 dark:text-zinc-100">
-                            {addr.label} · {addr.recipientName} ·{' '}
-                            <span className="font-mono-tabular">{addr.phone}</span>
-                          </div>
-                          <div className="text-zinc-600 dark:text-zinc-300">
-                            {addr.streetAddress}, {addr.township}, {addr.city}
-                          </div>
+                        {dict.cart.addAddressQuick}
+                      </button>
+                    </div>
+
+                    {addresses.length === 0 ? (
+                      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 p-4 space-y-2.5">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <input
+                            type="text"
+                            value={quickAddr.recipientName}
+                            onChange={(e) =>
+                              setQuickAddr({ ...quickAddr, recipientName: e.target.value })
+                            }
+                            placeholder={dict.profile.recipientField}
+                            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                          />
+                          <input
+                            type="tel"
+                            value={quickAddr.phone}
+                            onChange={(e) => setQuickAddr({ ...quickAddr, phone: e.target.value })}
+                            placeholder={dict.profile.phone}
+                            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                          />
+                          <input
+                            type="text"
+                            value={quickAddr.city}
+                            onChange={(e) => setQuickAddr({ ...quickAddr, city: e.target.value })}
+                            placeholder={dict.profile.cityField}
+                            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                          />
+                          <input
+                            type="text"
+                            value={quickAddr.township}
+                            onChange={(e) =>
+                              setQuickAddr({ ...quickAddr, township: e.target.value })
+                            }
+                            placeholder={dict.profile.townshipField}
+                            className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                          />
                         </div>
-                      </label>
-                    ))}
+                        <input
+                          type="text"
+                          value={quickAddr.streetAddress}
+                          onChange={(e) =>
+                            setQuickAddr({ ...quickAddr, streetAddress: e.target.value })
+                          }
+                          placeholder={dict.profile.streetField}
+                          className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                        />
+                        <button
+                          type="button"
+                          disabled={savingQuickAddr}
+                          onClick={handleSaveQuickAddress}
+                          className="rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                        >
+                          {dict.profile.saveAddress}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {addresses.map((addr) => (
+                          <label
+                            key={addr.id}
+                            className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                              selectedAddrId === addr.id
+                                ? 'border-zinc-900 bg-zinc-50 dark:border-zinc-100 dark:bg-zinc-800/60'
+                                : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="deliveryAddress"
+                              checked={selectedAddrId === addr.id}
+                              onChange={() => setSelectedAddrId(addr.id)}
+                              className="mt-1 accent-zinc-900 dark:accent-zinc-100"
+                            />
+                            <div className="text-xs space-y-0.5">
+                              <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                {addr.label} · {addr.recipientName} ·{' '}
+                                <span className="font-mono-tabular">{addr.phone}</span>
+                              </div>
+                              <div className="text-zinc-600 dark:text-zinc-300">
+                                {addr.streetAddress}, {addr.township}, {addr.city}
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
 
               {/* Payment Gateway Selector */}
               <div>
@@ -708,18 +722,20 @@ export function CartCheckoutDrawer({
                     </div>
                   )}
 
-                  <div>
-                    <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
-                      {dict.cart.txRefLabel}
-                    </label>
-                    <input
-                      type="text"
-                      value={txRef}
-                      onChange={(e) => setTxRef(e.target.value)}
-                      placeholder={dict.cart.txRefPlaceholder}
-                      className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm font-mono-tabular text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-zinc-100"
-                    />
-                  </div>
+                  {isAuthenticated && (
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
+                        {dict.cart.txRefLabel}
+                      </label>
+                      <input
+                        type="text"
+                        value={txRef}
+                        onChange={(e) => setTxRef(e.target.value)}
+                        placeholder={dict.cart.txRefPlaceholder}
+                        className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm font-mono-tabular text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-zinc-100"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -761,7 +777,7 @@ export function CartCheckoutDrawer({
             ) : (
               <button
                 type="button"
-                disabled={submitting}
+                disabled={submitting || !isAuthenticated}
                 onClick={handlePlaceOrder}
                 className="w-full rounded-lg bg-zinc-900 dark:bg-zinc-100 px-5 py-3 text-sm font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors cursor-pointer"
               >

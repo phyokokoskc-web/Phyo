@@ -103,6 +103,7 @@ export interface ChatMessage {
   senderRole: 'buyer' | 'admin';
   senderName: string;
   text: string;
+  imageUrl?: string;
   contextTag?: string;
   createdAt: string;
   read: boolean;
@@ -144,6 +145,16 @@ export interface PaymentSettings {
   bankAccounts: BankAccount[];
 }
 
+export interface StoreBrandConfig {
+  storeName: string;
+  logoImage: string;
+  bannerTitle: string;
+  bannerTitleMm: string;
+  bannerSubtitle: string;
+  bannerSubtitleMm: string;
+  showLogoBanner: boolean;
+}
+
 export interface BootstrapPayload {
   products: Product[];
   categories: string[];
@@ -154,6 +165,7 @@ export interface BootstrapPayload {
   wishlist: string[];
   chatThreads: ChatThread[];
   paymentSettings: PaymentSettings;
+  brand?: StoreBrandConfig;
   analyticsResetAt?: string;
 }
 

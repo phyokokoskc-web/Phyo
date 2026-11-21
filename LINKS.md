@@ -1,4 +1,4 @@
-# Su&KoKo Store Links
+# Shoptopia Store Links
 
 ## Public / Shared Links
 - **Buyer Storefront**: https://ais-pre-5aumizyvpixdghcn6lw3uk-646865261940.us-west2.run.app/

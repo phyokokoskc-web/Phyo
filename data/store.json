@@ -92,7 +92,7 @@
           "id": "msg-2",
           "threadId": "thread-buyer-1",
           "senderRole": "admin",
-          "senderName": "Su&KoKo Support",
+          "senderName": "Shoptopia Support",
           "text": "Mingalaba Kyaw Zin Htet! Yes, both Linear Red and Tactile Brown switches are ready in our Bahan warehouse for same-day Yangon courier dispatch.",
           "createdAt": "2026-11-18T09:25:00.000Z",
           "read": true
@@ -113,13 +113,13 @@
   "paymentSettings": {
     "kpay": {
       "enabled": true,
-      "accountName": "Su&KoKo Official (KBZPay)",
+      "accountName": "Shoptopia Official (KBZPay)",
       "phone": "09-784-512-900",
       "qrImage": ""
     },
     "wavepay": {
       "enabled": true,
-      "accountName": "Su&KoKo Official (WavePay)",
+      "accountName": "Shoptopia Official (WavePay)",
       "phone": "09-799-310-445",
       "qrImage": ""
     },
@@ -128,21 +128,21 @@
         "id": "bank-1",
         "bankName": "KBZ Bank",
         "accountNumber": "0443-0104-9002-1820",
-        "accountHolder": "Su&KoKo Co., Ltd",
+        "accountHolder": "Shoptopia Co., Ltd",
         "enabled": true
       },
       {
         "id": "bank-2",
         "bankName": "CB Bank",
         "accountNumber": "0010-6005-0008-4912",
-        "accountHolder": "Su&KoKo Co., Ltd",
+        "accountHolder": "Shoptopia Co., Ltd",
         "enabled": true
       },
       {
         "id": "bank-3",
         "bankName": "AYA Bank",
         "accountNumber": "2001-4102-8834-0019",
-        "accountHolder": "Su&KoKo Co., Ltd",
+        "accountHolder": "Shoptopia Co., Ltd",
         "enabled": true
       }
     ]
@@ -180,6 +180,26 @@
           "isDefault": false
         }
       ],
+      "wishlist": []
+    },
+    "buyer-mwluonae-6lb0": {
+      "profile": {
+        "id": "buyer-mwluonae-6lb0",
+        "name": "Guest Buyer",
+        "email": "",
+        "phone": ""
+      },
+      "addresses": [],
+      "wishlist": []
+    },
+    "guest": {
+      "profile": {
+        "id": "guest",
+        "name": "Guest Buyer",
+        "email": "",
+        "phone": ""
+      },
+      "addresses": [],
       "wishlist": []
     }
   }

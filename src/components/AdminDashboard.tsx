@@ -23,6 +23,13 @@ import {
   Check,
   Copy,
   Link2,
+  LogOut,
+  RefreshCw,
+  LayoutGrid,
+  List,
+  Star,
+  ImagePlus,
+  Loader2,
 } from 'lucide-react';
 import type {
   BankAccount,
@@ -33,40 +40,49 @@ import type {
   OrderStatus,
   PaymentSettings,
   Product,
+  StoreBrandConfig,
 } from '../types';
 import { formatDateTime, formatMMK, formatShortDate } from '../utils/format';
+import { readImageFileAsDataUrl } from '../utils/image';
 import { t } from '../i18n';
 import { SmartImage } from './SmartImage';
+import { StoreLogoBanner } from './StoreLogoBanner';
+import {
+  deleteBannerDoc,
+  deleteCategoryBatch,
+  deleteProductDoc,
+  quickPatchProductDoc,
+  renameCategoryBatch,
+  resetAnalyticsBatch,
+  saveBannerDoc,
+  saveCategoriesList,
+  savePaymentConfigDoc,
+  saveProductDoc,
+  saveStoreBrandDoc,
+  syncLocalSeedToFirestoreIfEmpty,
+  updateOrderStatusDoc,
+} from '../services/firestoreStore';
 
 interface AdminDashboardProps {
   lang: Language;
+  adminEmail?: string | null;
   products: Product[];
   categories: string[];
   banners: BannerSlide[];
   orders: Order[];
   chatThreads: ChatThread[];
+  activeThreadId?: string;
   paymentSettings: PaymentSettings;
+  brand: StoreBrandConfig;
   analyticsResetAt?: string;
   connected: boolean;
+  chatSyncError?: string;
+  loadingActiveThread?: boolean;
   onExitAdmin: () => void;
-  onProductCreated: (product: Product) => void;
-  onProductUpdated: (product: Product) => void;
-  onProductDeleted: (id: string) => void;
-  onOrderUpdated: (order: Order) => void;
-  onBannersUpdated: (banners: BannerSlide[]) => void;
-  onCategoriesUpdated: (payload: {
-    categories: string[];
-    products: Product[];
-    banners: BannerSlide[];
-  }) => void;
-  onPaymentSettingsUpdated: (settings: PaymentSettings) => void;
-  onAnalyticsReset: (payload: {
-    analyticsResetAt: string;
-    clearOrders: boolean;
-    orders: Order[];
-    products: Product[];
-  }) => void;
-  onSendAdminChat: (threadId: string, text: string) => void;
+  onSignOut?: () => void;
+  onSelectThread?: (threadId: string) => void;
+  onSendAdminChat: (threadId: string, text: string, imageUrl?: string) => Promise<void> | void;
+  onDeleteAdminMessage?: (threadId: string, messageId: string) => Promise<void>;
   onMarkThreadRead: (threadId: string) => void;
 }
 
@@ -74,29 +90,48 @@ type AdminTab = 'overview' | 'products' | 'orders' | 'storefront' | 'payments' |
 
 export function AdminDashboard({
   lang,
+  adminEmail,
   products,
   categories,
   banners,
   orders,
   chatThreads,
+  activeThreadId: controlledThreadId,
   paymentSettings,
+  brand,
   analyticsResetAt,
   connected,
+  chatSyncError,
+  loadingActiveThread = false,
   onExitAdmin,
-  onProductCreated,
-  onProductUpdated,
-  onProductDeleted,
-  onOrderUpdated,
-  onBannersUpdated,
-  onCategoriesUpdated,
-  onPaymentSettingsUpdated,
-  onAnalyticsReset,
+  onSignOut,
+  onSelectThread,
   onSendAdminChat,
+  onDeleteAdminMessage,
   onMarkThreadRead,
 }: AdminDashboardProps) {
   const dict = t(lang);
   const [tab, setTab] = useState<AdminTab>('overview');
+  const [adminError, setAdminError] = useState('');
+  const [syncingCloud, setSyncingCloud] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [productViewMode, setProductViewMode] = useState<'grid2' | 'list'>(() => {
+    try {
+      const saved = window.localStorage.getItem('yg_admin_prod_layout');
+      if (saved === 'list' || saved === 'grid2') return saved;
+    } catch {
+      // ignore
+    }
+    return 'grid2';
+  });
+  const updateProductViewMode = (mode: 'grid2' | 'list') => {
+    setProductViewMode(mode);
+    try {
+      window.localStorage.setItem('yg_admin_prod_layout', mode);
+    } catch {
+      // ignore
+    }
+  };
   const [orderFilter, setOrderFilter] = useState<OrderStatus | 'All'>('All');
   const [hoveredBarIdx, setHoveredBarIdx] = useState<number | null>(null);
 
@@ -137,6 +172,7 @@ export function AdminDashboard({
     descriptionMm: '',
   });
   const [savingProd, setSavingProd] = useState(false);
+  const [prodSaveError, setProdSaveError] = useState('');
 
   // Banner Form Modal state
   const [bannerModalOpen, setBannerModalOpen] = useState(false);
@@ -154,38 +190,96 @@ export function AdminDashboard({
     image: '',
   });
   const [savingBanner, setSavingBanner] = useState(false);
+  const [bannerSaveError, setBannerSaveError] = useState('');
 
   // Category Management state
   const [newCategoryName, setNewCategoryName] = useState('');
   const [renamingCat, setRenamingCat] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
 
+  // Store Brand & Logo Banner Form state
+  const [brandDraft, setBrandDraft] = useState<StoreBrandConfig>(brand);
+  const lastBrandSigRef = useRef(JSON.stringify(brand));
+  const [savingBrand, setSavingBrand] = useState(false);
+  const [brandSavedMsg, setBrandSavedMsg] = useState(false);
+  const [brandSaveError, setBrandSaveError] = useState('');
+
+  useEffect(() => {
+    const nextSig = JSON.stringify(brand);
+    if (nextSig !== lastBrandSigRef.current) {
+      lastBrandSigRef.current = nextSig;
+      setBrandDraft(brand);
+    }
+  }, [brand]);
+
   // Payment Gateways Form state
   const [payDraft, setPayDraft] = useState<PaymentSettings>(paymentSettings);
+  const lastPaySigRef = useRef(JSON.stringify(paymentSettings));
   const [savingPay, setSavingPay] = useState(false);
   const [paySavedMsg, setPaySavedMsg] = useState(false);
 
   useEffect(() => {
-    setPayDraft(paymentSettings);
+    const nextSig = JSON.stringify(paymentSettings);
+    if (nextSig !== lastPaySigRef.current) {
+      lastPaySigRef.current = nextSig;
+      setPayDraft(paymentSettings);
+    }
   }, [paymentSettings]);
 
   // Admin Chat state
-  const [activeThreadId, setActiveThreadId] = useState(chatThreads[0]?.id || 'thread-buyer-1');
+  const [localThreadId, setLocalThreadId] = useState(chatThreads[0]?.id || '');
+  const activeThreadId = controlledThreadId || localThreadId || chatThreads[0]?.id || '';
+  const setActiveThreadId = (id: string) => {
+    setLocalThreadId(id);
+    onSelectThread?.(id);
+  };
   const [chatDraft, setChatDraft] = useState('');
+  const [chatAttachedImage, setChatAttachedImage] = useState('');
+  const [threadSearch, setThreadSearch] = useState('');
+  const [sendingChat, setSendingChat] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [confirmDeleteMsgId, setConfirmDeleteMsgId] = useState<string | null>(null);
+  const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null);
+  const [chatLightboxImage, setChatLightboxImage] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const adminChatFileRef = useRef<HTMLInputElement | null>(null);
+
+  const filteredChatThreads = useMemo(() => {
+    const q = threadSearch.trim().toLowerCase();
+    if (!q) return chatThreads;
+    return chatThreads.filter((th) => {
+      const meta = th as ChatThread & { lastMessagePreview?: string };
+      return (
+        th.buyerName.toLowerCase().includes(q) ||
+        th.buyerPhone.toLowerCase().includes(q) ||
+        (meta.lastMessagePreview || '').toLowerCase().includes(q)
+      );
+    });
+  }, [chatThreads, threadSearch]);
 
   const activeThread = chatThreads.find((th) => th.id === activeThreadId) || chatThreads[0];
-  const unreadTotal = chatThreads.reduce(
-    (sum, th) => sum + th.messages.filter((m) => m.senderRole === 'buyer' && !m.read).length,
-    0
-  );
+  const getThreadUnread = (th: ChatThread) => {
+    const meta = th as ChatThread & { unreadByAdmin?: number };
+    const msgCount = th.messages.filter((m) => m.senderRole === 'buyer' && !m.read).length;
+    return Math.max(msgCount, Number(meta.unreadByAdmin || 0));
+  };
+  const unreadTotal = chatThreads.reduce((sum, th) => sum + getThreadUnread(th), 0);
+  const activeThreadUnread = activeThread ? getThreadUnread(activeThread) : 0;
+
+  useEffect(() => {
+    if (!controlledThreadId && chatThreads.length > 0 && !chatThreads.some((c) => c.id === localThreadId)) {
+      setActiveThreadId(chatThreads[0].id);
+    }
+  }, [chatThreads, controlledThreadId, localThreadId]);
 
   useEffect(() => {
     if (tab === 'messages' && activeThread) {
-      onMarkThreadRead(activeThread.id);
+      if (activeThreadUnread > 0) {
+        onMarkThreadRead(activeThread.id);
+      }
       chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [tab, activeThread?.id, activeThread?.messages.length]);
+  }, [tab, activeThread?.id, activeThread?.messages.length, activeThreadUnread]);
 
   // Revenue & Sales Analytics (respects analyticsResetAt)
   const analytics = useMemo(() => {
@@ -255,19 +349,12 @@ export function AdminDashboard({
   const filteredOrders =
     orderFilter === 'All' ? orders : orders.filter((o) => o.status === orderFilter);
 
-  const readFileAsDataUrl = (file: File, onLoad: (result: string) => void) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onLoad(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
+  const readFileAsDataUrl = readImageFileAsDataUrl;
 
   // Product Actions
   const openAddProduct = () => {
     setEditingProd(null);
+    setProdSaveError('');
     setProdForm({
       name: '',
       nameMm: '',
@@ -287,6 +374,7 @@ export function AdminDashboard({
 
   const openEditProduct = (p: Product) => {
     setEditingProd(p);
+    setProdSaveError('');
     setProdForm({
       name: p.name,
       nameMm: p.nameMm,
@@ -306,91 +394,79 @@ export function AdminDashboard({
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    setProdSaveError('');
+    setAdminError('');
     setSavingProd(true);
     try {
-      const payload = {
-        name: prodForm.name,
-        nameMm: prodForm.nameMm || prodForm.name,
-        sku: prodForm.sku,
-        category: prodForm.category,
-        price: Number(prodForm.price),
-        compareAtPrice: prodForm.compareAtPrice ? Number(prodForm.compareAtPrice) : undefined,
-        stock: Number(prodForm.stock),
+      const parsedVariants = prodForm.variants
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean);
+      const productPayload: Product = {
+        id: editingProd ? editingProd.id : `prod-${Date.now()}`,
+        sku: prodForm.sku.trim() || `YG-${Date.now().toString().slice(-4)}`,
+        name: prodForm.name.trim(),
+        nameMm: (prodForm.nameMm || prodForm.name).trim(),
+        category: prodForm.category.trim() || categories[0] || 'General',
+        price: Math.max(0, Number(prodForm.price) || 0),
+        ...(prodForm.compareAtPrice ? { compareAtPrice: Number(prodForm.compareAtPrice) } : {}),
+        stock: Math.max(0, Number(prodForm.stock) || 0),
         popular: prodForm.popular,
-        image: prodForm.image,
-        variants: prodForm.variants
-          .split(',')
-          .map((v) => v.trim())
-          .filter(Boolean),
+        rating: editingProd?.rating ?? 4.9,
+        soldCount: editingProd?.soldCount ?? 0,
+        image: prodForm.image.trim(),
+        variants: parsedVariants.length > 0 ? parsedVariants : ['Standard'],
         description: prodForm.description,
         descriptionMm: prodForm.descriptionMm || prodForm.description,
+        createdAt: editingProd?.createdAt || new Date().toISOString(),
       };
-      const url = editingProd ? `/api/products/${editingProd.id}` : '/api/products';
-      const method = editingProd ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        const saved = (await res.json()) as Product;
-        if (editingProd) {
-          onProductUpdated(saved);
-        } else {
-          onProductCreated(saved);
-        }
-        setModalOpen(false);
-      }
+      await saveProductDoc(productPayload, Boolean(editingProd), categories, analyticsResetAt);
+      setModalOpen(false);
+    } catch {
+      setProdSaveError('Could not save product to cloud database. Please verify connection and image size.');
     } finally {
       setSavingProd(false);
     }
   };
 
   const handleDeleteProduct = async (id: string) => {
-    const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      onProductDeleted(id);
+    setAdminError('');
+    try {
+      await deleteProductDoc(id);
+    } catch {
+      setAdminError('Failed to delete product.');
     }
   };
 
   const handleQuickPatchProduct = async (product: Product, patch: Partial<Product>) => {
-    const res = await fetch(`/api/products/${product.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    if (res.ok) {
-      onProductUpdated((await res.json()) as Product);
+    setAdminError('');
+    try {
+      await quickPatchProductDoc(product, patch);
+    } catch {
+      setAdminError('Failed to update product.');
     }
   };
 
   // Order Actions
-  const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
-    const res = await fetch(`/api/orders/${orderId}/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    });
-    if (res.ok) {
-      onOrderUpdated((await res.json()) as Order);
+  const handleUpdateOrderStatus = async (order: Order, status: OrderStatus) => {
+    setAdminError('');
+    try {
+      await updateOrderStatusDoc(order, status);
+    } catch {
+      setAdminError('Failed to update order status.');
     }
   };
 
   // Reset Analytics Action
   const handleConfirmResetAnalytics = async () => {
     setResetting(true);
+    setAdminError('');
     try {
-      const res = await fetch('/api/analytics/reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clearOrders: resetClearOrders }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        onAnalyticsReset(data);
-        setResetModalOpen(false);
-        setResetClearOrders(false);
-      }
+      await resetAnalyticsBatch(categories, products, orders, resetClearOrders);
+      setResetModalOpen(false);
+      setResetClearOrders(false);
+    } catch {
+      setAdminError('Failed to reset analytics.');
     } finally {
       setResetting(false);
     }
@@ -399,6 +475,7 @@ export function AdminDashboard({
   // Banner CRUD Actions
   const openAddBanner = () => {
     setEditingBanner(null);
+    setBannerSaveError('');
     setBannerForm({
       kicker: 'Featured Collection',
       kickerMm: 'အထူးကဏ္ဍ',
@@ -416,6 +493,7 @@ export function AdminDashboard({
 
   const openEditBanner = (b: BannerSlide) => {
     setEditingBanner(b);
+    setBannerSaveError('');
     setBannerForm({
       kicker: b.kicker,
       kickerMm: b.kickerMm,
@@ -433,43 +511,48 @@ export function AdminDashboard({
 
   const handleSaveBanner = async (e: React.FormEvent) => {
     e.preventDefault();
+    setBannerSaveError('');
     setSavingBanner(true);
     try {
-      const url = editingBanner ? `/api/banners/${editingBanner.id}` : '/api/banners';
-      const method = editingBanner ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bannerForm),
-      });
-      if (res.ok) {
-        onBannersUpdated((await res.json()) as BannerSlide[]);
-        setBannerModalOpen(false);
-      }
+      const existingIdx = editingBanner
+        ? banners.findIndex((b) => b.id === editingBanner.id)
+        : -1;
+      await saveBannerDoc(
+        {
+          id: editingBanner ? editingBanner.id : `banner-${Date.now()}`,
+          ...bannerForm,
+          sortOrder: existingIdx >= 0 ? existingIdx : banners.length,
+        },
+        Boolean(editingBanner)
+      );
+      setBannerModalOpen(false);
+    } catch {
+      setBannerSaveError('Could not save banner to cloud database.');
     } finally {
       setSavingBanner(false);
     }
   };
 
   const handleDeleteBanner = async (id: string) => {
-    const res = await fetch(`/api/banners/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      onBannersUpdated((await res.json()) as BannerSlide[]);
+    setAdminError('');
+    try {
+      await deleteBannerDoc(id);
+    } catch {
+      setAdminError('Failed to delete banner.');
     }
   };
 
   // Category CRUD Actions
   const handleAddCategory = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCategoryName.trim()) return;
-    const res = await fetch('/api/categories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newCategoryName.trim() }),
-    });
-    if (res.ok) {
-      onCategoriesUpdated(await res.json());
+    const clean = newCategoryName.trim();
+    if (!clean) return;
+    setAdminError('');
+    try {
+      await saveCategoriesList([...categories, clean], analyticsResetAt);
       setNewCategoryName('');
+    } catch {
+      setAdminError('Failed to add category.');
     }
   };
 
@@ -478,21 +561,28 @@ export function AdminDashboard({
       setRenamingCat(null);
       return;
     }
-    const res = await fetch(`/api/categories/${encodeURIComponent(oldName)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ newName: renameValue.trim() }),
-    });
-    if (res.ok) {
-      onCategoriesUpdated(await res.json());
+    setAdminError('');
+    try {
+      await renameCategoryBatch(
+        oldName,
+        renameValue.trim(),
+        categories,
+        products,
+        banners,
+        analyticsResetAt
+      );
       setRenamingCat(null);
+    } catch {
+      setAdminError('Failed to rename category.');
     }
   };
 
   const handleDeleteCategory = async (cat: string) => {
-    const res = await fetch(`/api/categories/${encodeURIComponent(cat)}`, { method: 'DELETE' });
-    if (res.ok) {
-      onCategoriesUpdated(await res.json());
+    setAdminError('');
+    try {
+      await deleteCategoryBatch(cat, categories, products, banners, analyticsResetAt);
+    } catch {
+      setAdminError('Failed to delete category.');
     }
   };
 
@@ -500,19 +590,51 @@ export function AdminDashboard({
   const handleSavePaymentSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingPay(true);
+    setAdminError('');
     try {
-      const res = await fetch('/api/payment-settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payDraft),
-      });
-      if (res.ok) {
-        onPaymentSettingsUpdated((await res.json()) as PaymentSettings);
-        setPaySavedMsg(true);
-        window.setTimeout(() => setPaySavedMsg(false), 2400);
-      }
+      await savePaymentConfigDoc(payDraft);
+      setPaySavedMsg(true);
+      window.setTimeout(() => setPaySavedMsg(false), 2400);
+    } catch {
+      setAdminError('Failed to save payment settings.');
     } finally {
       setSavingPay(false);
+    }
+  };
+
+  const handleManualSyncCloud = async () => {
+    setSyncingCloud(true);
+    setAdminError('');
+    try {
+      await syncLocalSeedToFirestoreIfEmpty();
+    } catch {
+      setAdminError('Could not sync seed catalog to cloud.');
+    } finally {
+      setSyncingCloud(false);
+    }
+  };
+
+  const handleSaveBrand = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!brandDraft.storeName.trim()) {
+      setBrandSaveError(lang === 'mm' ? 'ဆိုင်နာမည် ထည့်သွင်းပေးပါ။' : 'Store brand name is required.');
+      return;
+    }
+    setSavingBrand(true);
+    setBrandSaveError('');
+    setAdminError('');
+    try {
+      await saveStoreBrandDoc(brandDraft, categories, analyticsResetAt);
+      setBrandSavedMsg(true);
+      window.setTimeout(() => setBrandSavedMsg(false), 2600);
+    } catch {
+      setBrandSaveError(
+        lang === 'mm'
+          ? 'ဆိုင်နာမည်နှင့် Logo Banner ကို သိမ်းဆည်းမရပါ။ ပုံအရွယ်အစားနှင့် အင်တာနက်ကို စစ်ဆေးပါ။'
+          : 'Could not save brand & logo banner. Please check connection and image size.'
+      );
+    } finally {
+      setSavingBrand(false);
     }
   };
 
@@ -521,7 +643,7 @@ export function AdminDashboard({
       id: `bank-${Date.now()}`,
       bankName: 'UAB Bank',
       accountNumber: '',
-      accountHolder: 'Su&KoKo Co., Ltd',
+      accountHolder: `${brand.storeName || 'Shoptopia'} Co., Ltd`,
       enabled: true,
     };
     setPayDraft((prev) => ({ ...prev, bankAccounts: [...prev.bankAccounts, next] }));
@@ -541,11 +663,57 @@ export function AdminDashboard({
     }));
   };
 
-  const handleSendChat = (e: React.FormEvent) => {
+  const handleAdminChatFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setChatError('');
+    readImageFileAsDataUrl(file, (result) => {
+      if (result.length > 780000) {
+        setChatError(
+          lang === 'mm'
+            ? 'ပုံဖိုင်အရွယ်အစား ကြီးလွန်းပါသည်။ ပုံအသေးတစ်ခု ရွေးချယ်ပါ။'
+            : 'Image is too large. Please choose a smaller photo.'
+        );
+        return;
+      }
+      setChatAttachedImage(result);
+    });
+  };
+
+  const handleSendChat = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeThread || !chatDraft.trim()) return;
-    onSendAdminChat(activeThread.id, chatDraft.trim());
+    if (!activeThread || sendingChat) return;
+    const trimmed = chatDraft.trim();
+    const pendingImg = chatAttachedImage;
+    if (!trimmed && !pendingImg) return;
+    setChatError('');
+    setSendingChat(true);
     setChatDraft('');
+    setChatAttachedImage('');
+    try {
+      await onSendAdminChat(activeThread.id, trimmed, pendingImg || undefined);
+    } catch {
+      setChatDraft(trimmed);
+      setChatAttachedImage(pendingImg);
+      setChatError(dict.chat.sendError);
+    } finally {
+      setSendingChat(false);
+    }
+  };
+
+  const handleDeleteAdminMsg = async (threadId: string, messageId: string) => {
+    if (!onDeleteAdminMessage || deletingMsgId) return;
+    setChatError('');
+    setDeletingMsgId(messageId);
+    try {
+      await onDeleteAdminMessage(threadId, messageId);
+      setConfirmDeleteMsgId(null);
+    } catch {
+      setChatError(dict.chat.deleteError);
+    } finally {
+      setDeletingMsgId(null);
+    }
   };
 
   return (
@@ -561,7 +729,7 @@ export function AdminDashboard({
               {connected ? (
                 <>
                   <Wifi className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
-                  <span>Live Sync Active</span>
+                  <span>Cloud Live Sync Active</span>
                 </>
               ) : (
                 <>
@@ -570,6 +738,11 @@ export function AdminDashboard({
                 </>
               )}
             </p>
+            {adminEmail && (
+              <p className="text-[11px] font-mono-tabular text-zinc-500 dark:text-zinc-400 mt-1 truncate">
+                {adminEmail}
+              </p>
+            )}
           </div>
 
           <nav className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-1 gap-1.5">
@@ -611,18 +784,44 @@ export function AdminDashboard({
           </nav>
         </div>
 
-        <button
-          type="button"
-          onClick={onExitAdmin}
-          className="mt-4 hidden lg:inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" />
-          <span>{dict.admin.backToStore}</span>
-        </button>
+        <div className="mt-4 hidden lg:flex flex-col gap-2">
+          <button
+            type="button"
+            disabled={syncingCloud}
+            onClick={handleManualSyncCloud}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 transition-colors cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncingCloud ? 'animate-spin' : ''}`} />
+            <span>{lang === 'mm' ? 'Cloud Sync စစ်ဆေးရန်' : 'Sync Cloud Catalog'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onExitAdmin}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>{dict.admin.backToStore}</span>
+          </button>
+          {onSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>{dict.auth.signOut}</span>
+            </button>
+          )}
+        </div>
       </aside>
 
       {/* Main Admin Workspace */}
       <div className="flex-1 min-w-0 p-5 sm:p-8 space-y-6">
+        {adminError && (
+          <div className="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-4 py-2.5 text-xs font-medium text-red-700 dark:text-red-400">
+            {adminError}
+          </div>
+        )}
         {/* Contextual Top Breadcrumb Bar */}
         <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-zinc-200 dark:border-zinc-800">
           <div className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -672,6 +871,14 @@ export function AdminDashboard({
             </button>
           </div>
         </div>
+
+        {/* Home Page Logo Banner (Visible & Editable in Admin) */}
+        <StoreLogoBanner
+          brand={brand}
+          lang={lang}
+          isAdmin
+          onEdit={() => setTab('storefront')}
+        />
 
         {/* OVERVIEW TAB */}
         {tab === 'overview' && (
@@ -944,7 +1151,7 @@ export function AdminDashboard({
         {tab === 'products' && (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="relative flex-1 min-w-[220px] max-w-sm">
+              <div className="relative flex-1 min-w-[200px] max-w-sm">
                 <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
@@ -954,110 +1161,337 @@ export function AdminDashboard({
                   className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 pl-9 pr-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
                 />
               </div>
-              <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono-tabular">
-                {filteredProducts.length} items
-              </span>
+
+              <div className="flex items-center gap-2.5 ml-auto">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono-tabular">
+                  {filteredProducts.length} items
+                </span>
+                <div className="inline-flex items-center rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => updateProductViewMode('grid2')}
+                    aria-label={dict.home.grid2View}
+                    title={dict.home.grid2View}
+                    className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                      productViewMode === 'grid2'
+                        ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                        : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">{dict.home.grid2View}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateProductViewMode('list')}
+                    aria-label={dict.home.listView}
+                    title={dict.home.listView}
+                    className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                      productViewMode === 'list'
+                        ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                        : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <List className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">{dict.home.listView}</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-zinc-50 dark:bg-zinc-900/60 text-zinc-500 dark:text-zinc-400 border-b border-zinc-200 dark:border-zinc-800">
-                  <tr>
-                    <th className="py-3 px-4 font-medium">Product</th>
-                    <th className="py-3 px-4 font-medium">Category</th>
-                    <th className="py-3 px-4 font-medium text-right">Price (MMK)</th>
-                    <th className="py-3 px-4 font-medium text-right">Stock</th>
-                    <th className="py-3 px-4 font-medium text-center">Popular</th>
-                    <th className="py-3 px-4 font-medium text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            {productViewMode === 'grid2' ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+                {filteredProducts.map((p) => (
+                  <article
+                    key={p.id}
+                    className="flex flex-col rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] overflow-hidden"
+                  >
+                    <div className="relative aspect-[4/3] w-full overflow-hidden bg-zinc-100 dark:bg-zinc-900">
+                      <SmartImage
+                        src={p.image}
+                        alt={p.name}
+                        className="h-full w-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleQuickPatchProduct(p, { popular: !p.popular })}
+                        aria-label={`Toggle popular for ${p.name}`}
+                        title={dict.admin.popularFlag}
+                        className={`absolute top-2 right-2 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors cursor-pointer ${
+                          p.popular
+                            ? 'bg-amber-500 text-zinc-950 border-amber-500'
+                            : 'bg-white/90 text-zinc-600 border-zinc-200 dark:bg-zinc-900/90 dark:text-zinc-300 dark:border-zinc-700'
+                        }`}
+                      >
+                        <Star className={`w-3 h-3 ${p.popular ? 'fill-current' : ''}`} />
+                        <span className="hidden sm:inline">{dict.home.popularTag}</span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-1 flex-col p-2.5 sm:p-4 space-y-2.5">
+                      <div>
+                        <div className="text-[10px] sm:text-[11px] text-zinc-500 dark:text-zinc-400 truncate font-mono-tabular">
+                          {p.sku} · {p.category}
+                        </div>
+                        <h3 className="font-display text-xs sm:text-sm font-semibold text-zinc-900 dark:text-zinc-100 line-clamp-2 leading-snug mt-0.5">
+                          {lang === 'mm' ? p.nameMm : p.name}
+                        </h3>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-1.5 mt-auto pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                        <div>
+                          <label className="block text-[10px] text-zinc-400 mb-0.5">MMK</label>
+                          <input
+                            key={`g-price-${p.id}-${p.price}`}
+                            type="number"
+                            aria-label={`Price for ${p.name}`}
+                            defaultValue={p.price}
+                            onBlur={(e) => {
+                              const val = Number(e.target.value);
+                              if (val >= 0 && val !== p.price) {
+                                handleQuickPatchProduct(p, { price: val });
+                              }
+                            }}
+                            className="w-full min-w-0 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-1.5 py-1 text-[11px] sm:text-xs font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-zinc-400 mb-0.5">Stock</label>
+                          <input
+                            key={`g-stock-${p.id}-${p.stock}`}
+                            type="number"
+                            aria-label={`Stock for ${p.name}`}
+                            defaultValue={p.stock}
+                            onBlur={(e) => {
+                              const val = Number(e.target.value);
+                              if (val >= 0 && val !== p.stock) {
+                                handleQuickPatchProduct(p, { stock: val });
+                              }
+                            }}
+                            className="w-full min-w-0 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-1.5 py-1 text-[11px] sm:text-xs font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openEditProduct(p)}
+                          aria-label={`Edit ${p.name}`}
+                          className="inline-flex items-center justify-center gap-1 rounded-md border border-zinc-200 dark:border-zinc-700 py-1.5 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteProduct(p.id)}
+                          aria-label={`Delete ${p.name}`}
+                          className="inline-flex items-center justify-center gap-1 rounded-md border border-zinc-200 dark:border-zinc-700 py-1.5 text-[11px] font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Del</span>
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <>
+                {/* Mobile 1-Column List Cards */}
+                <div className="space-y-2.5 md:hidden">
                   {filteredProducts.map((p) => (
-                    <tr key={p.id} className="hover:bg-zinc-50/70 dark:hover:bg-zinc-900/40">
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-3">
-                          <div className="h-10 w-12 shrink-0 overflow-hidden rounded-md bg-zinc-100 dark:bg-zinc-900">
-                            <SmartImage
-                              src={p.image}
-                              alt={p.name}
-                              className="h-full w-full object-cover"
-                            />
-                          </div>
-                          <div>
-                            <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                    <article
+                      key={p.id}
+                      className="flex gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-3"
+                    >
+                      <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-zinc-100 dark:bg-zinc-900">
+                        <SmartImage
+                          src={p.image}
+                          alt={p.name}
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      <div className="flex flex-1 flex-col min-w-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-xs text-zinc-900 dark:text-zinc-100 truncate">
                               {lang === 'mm' ? p.nameMm : p.name}
                             </div>
-                            <div className="font-mono-tabular text-[11px] text-zinc-500">
-                              {p.sku}
+                            <div className="font-mono-tabular text-[11px] text-zinc-500 truncate">
+                              {p.sku} · {p.category}
                             </div>
                           </div>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-zinc-600 dark:text-zinc-300">{p.category}</td>
-                      <td className="py-3 px-4 text-right">
-                        <input
-                          type="number"
-                          aria-label={`Price for ${p.name}`}
-                          defaultValue={p.price}
-                          onBlur={(e) => {
-                            const val = Number(e.target.value);
-                            if (val >= 0 && val !== p.price) {
-                              handleQuickPatchProduct(p, { price: val });
-                            }
-                          }}
-                          className="w-28 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-right font-mono-tabular text-zinc-900 dark:text-zinc-100"
-                        />
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <input
-                          type="number"
-                          aria-label={`Stock for ${p.name}`}
-                          defaultValue={p.stock}
-                          onBlur={(e) => {
-                            const val = Number(e.target.value);
-                            if (val >= 0 && val !== p.stock) {
-                              handleQuickPatchProduct(p, { stock: val });
-                            }
-                          }}
-                          className="w-16 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-right font-mono-tabular text-zinc-900 dark:text-zinc-100"
-                        />
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <input
-                          type="checkbox"
-                          checked={p.popular}
-                          onChange={(e) =>
-                            handleQuickPatchProduct(p, { popular: e.target.checked })
-                          }
-                          aria-label={`Toggle popular for ${p.name}`}
-                          className="accent-zinc-900 dark:accent-zinc-100 cursor-pointer"
-                        />
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="inline-flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => openEditProduct(p)}
-                            aria-label={`Edit ${p.name}`}
-                            className="p-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                            onClick={() => handleQuickPatchProduct(p, { popular: !p.popular })}
+                            aria-label={`Toggle popular for ${p.name}`}
+                            className={`p-1 rounded border cursor-pointer ${
+                              p.popular
+                                ? 'bg-amber-500 text-zinc-950 border-amber-500'
+                                : 'text-zinc-400 border-zinc-200 dark:border-zinc-700'
+                            }`}
                           >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteProduct(p.id)}
-                            aria-label={`Delete ${p.name}`}
-                            className="p-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Star className={`w-3 h-3 ${p.popular ? 'fill-current' : ''}`} />
                           </button>
                         </div>
-                      </td>
-                    </tr>
+
+                        <div className="mt-2 flex items-center gap-2">
+                          <input
+                            key={`l-price-${p.id}-${p.price}`}
+                            type="number"
+                            aria-label={`Price for ${p.name}`}
+                            defaultValue={p.price}
+                            onBlur={(e) => {
+                              const val = Number(e.target.value);
+                              if (val >= 0 && val !== p.price) {
+                                handleQuickPatchProduct(p, { price: val });
+                              }
+                            }}
+                            className="w-24 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                          />
+                          <input
+                            key={`l-stock-${p.id}-${p.stock}`}
+                            type="number"
+                            aria-label={`Stock for ${p.name}`}
+                            defaultValue={p.stock}
+                            onBlur={(e) => {
+                              const val = Number(e.target.value);
+                              if (val >= 0 && val !== p.stock) {
+                                handleQuickPatchProduct(p, { stock: val });
+                              }
+                            }}
+                            className="w-14 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-xs font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                          />
+                          <div className="ml-auto flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditProduct(p)}
+                              aria-label={`Edit ${p.name}`}
+                              className="p-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 cursor-pointer"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteProduct(p.id)}
+                              aria-label={`Delete ${p.name}`}
+                              className="p-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 text-red-600 dark:text-red-400 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </article>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </div>
+
+                {/* Desktop Table View */}
+                <div className="hidden md:block overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-zinc-50 dark:bg-zinc-900/60 text-zinc-500 dark:text-zinc-400 border-b border-zinc-200 dark:border-zinc-800">
+                      <tr>
+                        <th className="py-3 px-4 font-medium">Product</th>
+                        <th className="py-3 px-4 font-medium">Category</th>
+                        <th className="py-3 px-4 font-medium text-right">Price (MMK)</th>
+                        <th className="py-3 px-4 font-medium text-right">Stock</th>
+                        <th className="py-3 px-4 font-medium text-center">Popular</th>
+                        <th className="py-3 px-4 font-medium text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {filteredProducts.map((p) => (
+                        <tr key={p.id} className="hover:bg-zinc-50/70 dark:hover:bg-zinc-900/40">
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-12 shrink-0 overflow-hidden rounded-md bg-zinc-100 dark:bg-zinc-900">
+                                <SmartImage
+                                  src={p.image}
+                                  alt={p.name}
+                                  className="h-full w-full object-cover"
+                                />
+                              </div>
+                              <div>
+                                <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                                  {lang === 'mm' ? p.nameMm : p.name}
+                                </div>
+                                <div className="font-mono-tabular text-[11px] text-zinc-500">
+                                  {p.sku}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-zinc-600 dark:text-zinc-300">{p.category}</td>
+                          <td className="py-3 px-4 text-right">
+                            <input
+                              key={`price-${p.id}-${p.price}`}
+                              type="number"
+                              aria-label={`Price for ${p.name}`}
+                              defaultValue={p.price}
+                              onBlur={(e) => {
+                                const val = Number(e.target.value);
+                                if (val >= 0 && val !== p.price) {
+                                  handleQuickPatchProduct(p, { price: val });
+                                }
+                              }}
+                              className="w-28 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-right font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                            />
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <input
+                              key={`stock-${p.id}-${p.stock}`}
+                              type="number"
+                              aria-label={`Stock for ${p.name}`}
+                              defaultValue={p.stock}
+                              onBlur={(e) => {
+                                const val = Number(e.target.value);
+                                if (val >= 0 && val !== p.stock) {
+                                  handleQuickPatchProduct(p, { stock: val });
+                                }
+                              }}
+                              className="w-16 rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-right font-mono-tabular text-zinc-900 dark:text-zinc-100"
+                            />
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <input
+                              type="checkbox"
+                              checked={p.popular}
+                              onChange={(e) =>
+                                handleQuickPatchProduct(p, { popular: e.target.checked })
+                              }
+                              aria-label={`Toggle popular for ${p.name}`}
+                              className="accent-zinc-900 dark:accent-zinc-100 cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openEditProduct(p)}
+                                aria-label={`Edit ${p.name}`}
+                                className="p-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteProduct(p.id)}
+                                aria-label={`Delete ${p.name}`}
+                                className="p-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1133,7 +1567,7 @@ export function AdminDashboard({
                       {order.status === 'Pending' && (
                         <button
                           type="button"
-                          onClick={() => handleUpdateOrderStatus(order.id, 'Verified')}
+                          onClick={() => handleUpdateOrderStatus(order, 'Verified')}
                           className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-white dark:text-zinc-900 cursor-pointer"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
@@ -1143,7 +1577,7 @@ export function AdminDashboard({
                       {(order.status === 'Pending' || order.status === 'Verified') && (
                         <button
                           type="button"
-                          onClick={() => handleUpdateOrderStatus(order.id, 'Shipped')}
+                          onClick={() => handleUpdateOrderStatus(order, 'Shipped')}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-800 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer"
                         >
                           <Truck className="w-3.5 h-3.5" />
@@ -1153,7 +1587,7 @@ export function AdminDashboard({
                       {order.status === 'Shipped' && (
                         <button
                           type="button"
-                          onClick={() => handleUpdateOrderStatus(order.id, 'Delivered')}
+                          onClick={() => handleUpdateOrderStatus(order, 'Delivered')}
                           className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 cursor-pointer"
                         >
                           <PackageCheck className="w-3.5 h-3.5" />
@@ -1163,7 +1597,7 @@ export function AdminDashboard({
                       {order.status !== 'Delivered' && order.status !== 'Cancelled' && (
                         <button
                           type="button"
-                          onClick={() => handleUpdateOrderStatus(order.id, 'Cancelled')}
+                          onClick={() => handleUpdateOrderStatus(order, 'Cancelled')}
                           className="ml-auto text-xs font-medium text-red-600 dark:text-red-400 hover:underline cursor-pointer"
                         >
                           {dict.admin.cancelOrder}
@@ -1177,11 +1611,191 @@ export function AdminDashboard({
           </div>
         )}
 
-        {/* BANNERS & CATEGORIES TAB */}
+        {/* BRAND, BANNERS & CATEGORIES TAB */}
         {tab === 'storefront' && (
           <div className="space-y-8">
+            {/* Store Brand Name & Home Logo Banner Editor */}
+            <form
+              onSubmit={handleSaveBrand}
+              className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/30 p-5 space-y-5"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                    {dict.admin.brandSectionTitle}
+                  </h3>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    {dict.admin.brandSectionDesc}
+                  </p>
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={brandDraft.showLogoBanner}
+                    onChange={(e) =>
+                      setBrandDraft((b) => ({ ...b, showLogoBanner: e.target.checked }))
+                    }
+                    className="accent-zinc-900 dark:accent-zinc-100"
+                  />
+                  <span>{dict.admin.showLogoBannerLabel}</span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {dict.admin.storeNameLabel} *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={80}
+                    value={brandDraft.storeName}
+                    onChange={(e) =>
+                      setBrandDraft((b) => ({ ...b, storeName: e.target.value }))
+                    }
+                    placeholder={dict.admin.storeNamePlaceholder}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {dict.admin.logoImageLabel}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={brandDraft.logoImage}
+                      onChange={(e) =>
+                        setBrandDraft((b) => ({ ...b, logoImage: e.target.value }))
+                      }
+                      placeholder="https://... or upload logo image"
+                      className="flex-1 min-w-0 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                    />
+                    <label className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer whitespace-nowrap shrink-0">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{dict.admin.uploadImage}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) {
+                            readFileAsDataUrl(f, (res) =>
+                              setBrandDraft((b) => ({ ...b, logoImage: res }))
+                            );
+                          }
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                    {brandDraft.logoImage && (
+                      <button
+                        type="button"
+                        onClick={() => setBrandDraft((b) => ({ ...b, logoImage: '' }))}
+                        className="rounded-lg border border-zinc-200 dark:border-zinc-700 px-2.5 py-2 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        {dict.admin.clearLogoImage}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {dict.admin.bannerHeadlineEnLabel}
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={120}
+                    value={brandDraft.bannerTitle}
+                    onChange={(e) =>
+                      setBrandDraft((b) => ({ ...b, bannerTitle: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {dict.admin.bannerHeadlineMmLabel}
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={180}
+                    value={brandDraft.bannerTitleMm}
+                    onChange={(e) =>
+                      setBrandDraft((b) => ({ ...b, bannerTitleMm: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {dict.admin.bannerSubtitleEnLabel}
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={240}
+                    value={brandDraft.bannerSubtitle}
+                    onChange={(e) =>
+                      setBrandDraft((b) => ({ ...b, bannerSubtitle: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {dict.admin.bannerSubtitleMmLabel}
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={300}
+                    value={brandDraft.bannerSubtitleMm}
+                    onChange={(e) =>
+                      setBrandDraft((b) => ({ ...b, bannerSubtitleMm: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                  />
+                </div>
+              </div>
+
+              {/* Live Draft Preview */}
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                  {lang === 'mm' ? 'ကြိုတင်မြင်ကွင်း (Live Preview)' : 'Live Preview'}
+                </span>
+                <StoreLogoBanner brand={brandDraft} lang={lang} />
+              </div>
+
+              {brandSaveError && (
+                <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                  {brandSaveError}
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={savingBrand}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{savingBrand ? dict.admin.savingBrandBtn : dict.admin.saveBrandBtn}</span>
+                </button>
+                {brandSavedMsg && (
+                  <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                    {dict.admin.brandSavedMsg}
+                  </span>
+                )}
+              </div>
+            </form>
+
             {/* Banner Slides Section */}
-            <div className="space-y-4">
+            <div className="pt-2 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
@@ -1641,112 +2255,281 @@ export function AdminDashboard({
 
         {/* LIVE MESSAGES TAB */}
         {tab === 'messages' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden h-[520px]">
-            <div className="border-b md:border-b-0 md:border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto">
-              {chatThreads.map((th) => {
-                const unread = th.messages.filter(
-                  (m) => m.senderRole === 'buyer' && !m.read
-                ).length;
-                const lastMsg = th.messages[th.messages.length - 1];
-                return (
-                  <button
-                    key={th.id}
-                    type="button"
-                    onClick={() => {
-                      setActiveThreadId(th.id);
-                      onMarkThreadRead(th.id);
-                    }}
-                    className={`w-full text-left p-4 border-b border-zinc-100 dark:border-zinc-800 transition-colors cursor-pointer ${
-                      activeThread?.id === th.id
-                        ? 'bg-zinc-100 dark:bg-zinc-800/70'
-                        : 'hover:bg-zinc-50 dark:hover:bg-zinc-900/40'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="font-semibold text-xs text-zinc-900 dark:text-zinc-100">
-                        {th.buyerName}
-                      </span>
-                      {unread > 0 && (
-                        <span className="font-mono-tabular text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500 text-zinc-950">
-                          {unread}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 line-clamp-1">
-                      {lastMsg?.text || 'No messages yet'}
-                    </p>
-                  </button>
-                );
-              })}
+          <div className="flex flex-col md:grid md:grid-cols-3 rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden h-[min(640px,calc(100dvh-10rem))] md:h-[560px]">
+            <div className="shrink-0 max-h-44 md:max-h-none md:h-full border-b md:border-b-0 md:border-r border-zinc-200 dark:border-zinc-800 flex flex-col overflow-hidden">
+              <div className="shrink-0 p-2.5 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={threadSearch}
+                    onChange={(e) => setThreadSearch(e.target.value)}
+                    placeholder={dict.chat.searchThreads}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 pl-8 pr-3 py-1.5 text-xs text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-zinc-100"
+                  />
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                {chatThreads.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
+                    {dict.chat.noThreads}
+                  </div>
+                ) : filteredChatThreads.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400">
+                    {dict.chat.noMatchingThreads}
+                  </div>
+                ) : (
+                  filteredChatThreads.map((th) => {
+                    const meta = th as ChatThread & { lastMessagePreview?: string };
+                    const unread = getThreadUnread(th);
+                    const lastMsg = th.messages[th.messages.length - 1];
+                    return (
+                      <button
+                        key={th.id}
+                        type="button"
+                        onClick={() => {
+                          setChatError('');
+                          setActiveThreadId(th.id);
+                          if (unread > 0) {
+                            onMarkThreadRead(th.id);
+                          }
+                        }}
+                        className={`w-full text-left p-3.5 md:p-4 border-b border-zinc-100 dark:border-zinc-800 transition-colors cursor-pointer ${
+                          activeThread?.id === th.id
+                            ? 'bg-zinc-100 dark:bg-zinc-800/70'
+                            : 'hover:bg-zinc-50 dark:hover:bg-zinc-900/40'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="font-semibold text-xs text-zinc-900 dark:text-zinc-100 truncate">
+                            {th.buyerName}
+                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {th.lastMessageAt && (
+                              <span className="font-mono-tabular text-[10px] text-zinc-400 dark:text-zinc-500">
+                                {formatShortDate(th.lastMessageAt)}
+                              </span>
+                            )}
+                            {unread > 0 && (
+                              <span className="font-mono-tabular text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500 text-zinc-950">
+                                {unread}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400 line-clamp-1">
+                          {lastMsg?.text ||
+                            (lastMsg?.imageUrl ? `[${dict.chat.photoTag}]` : '') ||
+                            meta.lastMessagePreview ||
+                            dict.chat.noThreads}
+                        </p>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
             </div>
 
-            <div className="md:col-span-2 flex flex-col h-full">
+            <div className="flex-1 min-h-0 md:col-span-2 flex flex-col md:h-full overflow-hidden">
               {activeThread ? (
                 <>
-                  <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-zinc-50/50 dark:bg-zinc-900/40">
-                    <div>
-                      <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                  <div className="shrink-0 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2 bg-zinc-50/50 dark:bg-zinc-900/40">
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate">
                         {activeThread.buyerName}
                       </div>
-                      <div className="text-[11px] font-mono-tabular text-zinc-500">
-                        {activeThread.buyerPhone}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                    {activeThread.messages.map((msg) => {
-                      const isAdmin = msg.senderRole === 'admin';
-                      return (
-                        <div
-                          key={msg.id}
-                          className={`flex flex-col ${isAdmin ? 'items-end' : 'items-start'}`}
-                        >
-                          {msg.contextTag && (
-                            <span className="text-[11px] text-zinc-500 mb-1">
-                              Re: {msg.contextTag}
-                            </span>
-                          )}
-                          <div
-                            className={`max-w-[80%] rounded-xl px-3.5 py-2 text-xs sm:text-sm ${
-                              isAdmin
-                                ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                                : 'bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
-                            }`}
-                          >
-                            {msg.text}
-                          </div>
-                          <span className="text-[10px] text-zinc-400 mt-1 font-mono-tabular">
-                            {formatDateTime(msg.createdAt)}
-                          </span>
+                      {activeThread.buyerPhone && (
+                        <div className="text-[11px] font-mono-tabular text-zinc-500 truncate">
+                          {activeThread.buyerPhone}
                         </div>
-                      );
-                    })}
+                      )}
+                    </div>
+                    {activeThread.messages.length > 0 && (
+                      <span className="shrink-0 font-mono-tabular text-[11px] text-zinc-500 dark:text-zinc-400">
+                        {activeThread.messages.length} {dict.chat.messagesUnit}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+                    {loadingActiveThread && activeThread.messages.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-zinc-500 dark:text-zinc-400">
+                        {dict.chat.loadingHistory}
+                      </div>
+                    ) : (
+                      activeThread.messages.map((msg, idx) => {
+                        const isAdmin = msg.senderRole === 'admin';
+                        const dayLabel = formatShortDate(msg.createdAt);
+                        const prevDayLabel =
+                          idx > 0 ? formatShortDate(activeThread.messages[idx - 1].createdAt) : '';
+                        const showDateDivider = idx === 0 || dayLabel !== prevDayLabel;
+                        const isConfirming = confirmDeleteMsgId === msg.id;
+                        const isDeleting = deletingMsgId === msg.id;
+                        return (
+                          <div key={msg.id} className="space-y-2">
+                            {showDateDivider && (
+                              <div className="flex items-center gap-2 py-1">
+                                <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+                                <span className="text-[10px] font-mono-tabular uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                                  {dayLabel}
+                                </span>
+                                <div className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+                              </div>
+                            )}
+                            <div
+                              className={`flex flex-col ${isAdmin ? 'items-end' : 'items-start'}`}
+                            >
+                              {msg.contextTag && (
+                                <span className="text-[11px] text-zinc-500 mb-1">
+                                  Re: {msg.contextTag}
+                                </span>
+                              )}
+                              <div
+                                className={`max-w-[80%] break-words rounded-xl overflow-hidden ${
+                                  msg.imageUrl && !msg.text ? 'p-1.5' : 'px-3.5 py-2'
+                                } text-xs sm:text-sm space-y-2 ${
+                                  isAdmin
+                                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                                    : 'bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
+                                }`}
+                              >
+                                {msg.imageUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setChatLightboxImage(msg.imageUrl || null)}
+                                    className="block w-full overflow-hidden rounded-lg bg-black/5 dark:bg-white/5 cursor-zoom-in"
+                                  >
+                                    <img
+                                      src={msg.imageUrl}
+                                      alt={msg.text || dict.chat.photoTag}
+                                      className="max-h-60 w-auto max-w-full rounded-lg object-contain"
+                                    />
+                                  </button>
+                                )}
+                                {msg.text && <p className="whitespace-pre-wrap">{msg.text}</p>}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="text-[10px] text-zinc-400 font-mono-tabular">
+                                  {formatDateTime(msg.createdAt)}
+                                </span>
+                                {onDeleteAdminMessage && (
+                                  isConfirming ? (
+                                    <span className="inline-flex items-center gap-1.5 text-[10px]">
+                                      <button
+                                        type="button"
+                                        disabled={isDeleting}
+                                        onClick={() => void handleDeleteAdminMsg(activeThread.id, msg.id)}
+                                        className="font-semibold text-red-600 dark:text-red-400 hover:underline disabled:opacity-50 cursor-pointer"
+                                      >
+                                        {isDeleting ? dict.chat.deleting : dict.chat.confirmDeleteMessage}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={isDeleting}
+                                        onClick={() => setConfirmDeleteMsgId(null)}
+                                        className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
+                                      >
+                                        {dict.chat.cancelDelete}
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteMsgId(msg.id)}
+                                      aria-label={dict.chat.deleteMessage}
+                                      title={dict.chat.deleteMessage}
+                                      className="inline-flex items-center gap-0.5 text-[10px] text-zinc-400 hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  )
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                     <div ref={chatBottomRef} />
                   </div>
+                  {(chatError || chatSyncError) && (
+                    <div className="shrink-0 px-4 py-2 bg-red-50 dark:bg-red-950/40 border-t border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300">
+                      {chatError || chatSyncError}
+                    </div>
+                  )}
+                  {chatAttachedImage && (
+                    <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 bg-zinc-50 dark:bg-zinc-900/80 border-t border-zinc-200 dark:border-zinc-800">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img
+                          src={chatAttachedImage}
+                          alt={dict.chat.photoTag}
+                          className="h-12 w-12 rounded-lg object-cover border border-zinc-200 dark:border-zinc-700 shrink-0"
+                        />
+                        <span className="text-xs text-zinc-600 dark:text-zinc-300 truncate">
+                          {dict.chat.photoTag}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setChatAttachedImage('')}
+                        aria-label={dict.chat.removeImage}
+                        title={dict.chat.removeImage}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                   <form
                     onSubmit={handleSendChat}
-                    className="flex items-center gap-2 p-3 border-t border-zinc-200 dark:border-zinc-800"
+                    className="shrink-0 flex items-center gap-2 p-3 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F]"
                   >
+                    <input
+                      ref={adminChatFileRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAdminChatFileChange}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      disabled={sendingChat}
+                      onClick={() => adminChatFileRef.current?.click()}
+                      aria-label={dict.chat.attachImage}
+                      title={dict.chat.attachImage}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
+                    >
+                      <ImagePlus className="w-4 h-4" />
+                    </button>
                     <input
                       type="text"
                       value={chatDraft}
-                      onChange={(e) => setChatDraft(e.target.value)}
-                      placeholder="Reply to customer in real time..."
-                      className="flex-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100"
+                      onChange={(e) => {
+                        setChatDraft(e.target.value);
+                        if (chatError) setChatError('');
+                      }}
+                      disabled={sendingChat}
+                      placeholder={
+                        chatAttachedImage ? dict.chat.photoPlaceholder : dict.chat.replyPlaceholder
+                      }
+                      className="flex-1 min-w-0 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 disabled:opacity-60"
                     />
                     <button
                       type="submit"
-                      disabled={!chatDraft.trim()}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 disabled:opacity-40 cursor-pointer"
+                      disabled={(!chatDraft.trim() && !chatAttachedImage) || sendingChat}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 disabled:opacity-40 cursor-pointer"
                     >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Send</span>
+                      {sendingChat ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3.5 h-3.5" />
+                      )}
+                      <span>{sendingChat ? dict.chat.sending : dict.chat.send}</span>
                     </button>
                   </form>
                 </>
               ) : (
-                <div className="flex-1 flex items-center justify-center text-xs text-zinc-500">
-                  Select a buyer conversation
+                <div className="flex-1 flex items-center justify-center text-xs text-zinc-500 p-6 text-center">
+                  {dict.chat.selectThread}
                 </div>
               )}
             </div>
@@ -1957,6 +2740,12 @@ export function AdminDashboard({
                 </label>
               </div>
             </div>
+
+            {bannerSaveError && (
+              <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                {bannerSaveError}
+              </p>
+            )}
 
             <div className="flex justify-end gap-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
               <button
@@ -2173,6 +2962,12 @@ export function AdminDashboard({
               <span>{dict.admin.popularFlag}</span>
             </label>
 
+            {prodSaveError && (
+              <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                {prodSaveError}
+              </p>
+            )}
+
             <div className="flex justify-end gap-3 pt-3 border-t border-zinc-200 dark:border-zinc-800">
               <button
                 type="button"
@@ -2190,6 +2985,28 @@ export function AdminDashboard({
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {/* Chat Image Lightbox */}
+      {chatLightboxImage && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs"
+          onClick={() => setChatLightboxImage(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setChatLightboxImage(null)}
+            aria-label="Close image preview"
+            className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={chatLightboxImage}
+            alt={dict.chat.photoTag}
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] max-w-[92vw] rounded-xl object-contain shadow-2xl"
+          />
         </div>
       )}
     </div>

@@ -1,24 +1,45 @@
 import { useState, useEffect } from 'react';
-import { MapPin, Plus, Trash2, Check, Edit3, Users, UserPlus, LogIn } from 'lucide-react';
-import type { Address, ChatThread, Language, Order, UserProfile } from '../types';
+import {
+  MapPin,
+  Plus,
+  Trash2,
+  Check,
+  Edit3,
+  LogOut,
+  Package,
+  Heart,
+  MessageSquare,
+  RefreshCw,
+  ShieldCheck,
+} from 'lucide-react';
+import type { Address, Language, UserProfile } from '../types';
 import { t } from '../i18n';
-
-interface SwitchedAccountPayload {
-  profile: UserProfile;
-  addresses: Address[];
-  wishlist: string[];
-  orders: Order[];
-  chatThreads: ChatThread[];
-}
+import { BuyerAuthPanel } from './BuyerAuthPanel';
+import {
+  deleteAddressDoc,
+  saveAddressDoc,
+  saveBuyerProfileDoc,
+  setDefaultAddressDoc,
+} from '../services/firestoreStore';
 
 interface ProfileViewProps {
+  isAuthenticated: boolean;
+  authEmail?: string | null;
+  authName?: string | null;
+  authPhone?: string | null;
   buyerId: string;
   profile: UserProfile;
   addresses: Address[];
+  ordersCount?: number;
+  wishlistCount?: number;
+  chatCount?: number;
   lang: Language;
-  onProfileSaved: (profile: UserProfile) => void;
-  onAddressesUpdated: (addresses: Address[]) => void;
-  onAccountSwitched: (nextBuyerId: string, data: SwitchedAccountPayload) => void;
+  onSignInGoogle: () => Promise<void>;
+  onSignOut: () => Promise<void>;
+  onSwitchAccount?: () => void;
+  onGoToOrders?: () => void;
+  onGoToWishlist?: () => void;
+  onOpenChat?: () => void;
 }
 
 const emptyForm = {
@@ -33,94 +54,73 @@ const emptyForm = {
 };
 
 export function ProfileView({
+  isAuthenticated,
+  authEmail,
+  authName,
+  authPhone,
   buyerId,
   profile,
   addresses,
+  ordersCount = 0,
+  wishlistCount = 0,
+  chatCount = 0,
   lang,
-  onProfileSaved,
-  onAddressesUpdated,
-  onAccountSwitched,
+  onSignInGoogle,
+  onSignOut,
+  onSwitchAccount,
+  onGoToOrders,
+  onGoToWishlist,
+  onOpenChat,
 }: ProfileViewProps) {
   const dict = t(lang);
   const [name, setName] = useState(profile.name);
   const [email, setEmail] = useState(profile.email);
   const [phone, setPhone] = useState(profile.phone);
   const [profileSaved, setProfileSaved] = useState(false);
-
-  const [lookupInput, setLookupInput] = useState('');
-  const [switchStatus, setSwitchStatus] = useState('');
-  const [switchError, setSwitchError] = useState('');
-  const [switching, setSwitching] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
 
   const [showAddrForm, setShowAddrForm] = useState(false);
   const [editingAddrId, setEditingAddrId] = useState<string | null>(null);
   const [addrForm, setAddrForm] = useState(emptyForm);
+  const [savingAddr, setSavingAddr] = useState(false);
 
   useEffect(() => {
     setName(profile.name);
     setEmail(profile.email);
     setPhone(profile.phone);
-  }, [profile]);
+  }, [profile.id, profile.name, profile.email, profile.phone]);
+
+  if (!isAuthenticated) {
+    return (
+      <section className="space-y-8">
+        <div className="border-b border-zinc-200 dark:border-zinc-800 pb-5">
+          <h1 className="font-display text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
+            {dict.profile.heading}
+          </h1>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">{dict.profile.subtitle}</p>
+        </div>
+
+        <div className="max-w-lg rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-6">
+          <BuyerAuthPanel
+            lang={lang}
+            onSignInGoogle={onSignInGoogle}
+            title={dict.auth.buyerGateTitle}
+            subtitle={dict.auth.buyerGateDesc}
+          />
+        </div>
+      </section>
+    );
+  }
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('/api/profile', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ buyerId, name, email, phone }),
-    });
-    if (res.ok) {
-      const updated = (await res.json()) as UserProfile;
-      onProfileSaved(updated);
+    setSavingProfile(true);
+    try {
+      await saveBuyerProfileDoc(buyerId, { name, email, phone });
       setProfileSaved(true);
       window.setTimeout(() => setProfileSaved(false), 2000);
-    }
-  };
-
-  const handleFindAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSwitchError('');
-    setSwitchStatus('');
-    if (!lookupInput.trim()) return;
-    setSwitching(true);
-    try {
-      const res = await fetch('/api/buyers/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'find', identifier: lookupInput.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setSwitchError(dict.profile.accountNotFound);
-        return;
-      }
-      onAccountSwitched(data.buyerId, data);
-      setLookupInput('');
-      setSwitchStatus(dict.profile.switchedSuccess);
-      window.setTimeout(() => setSwitchStatus(''), 2400);
     } finally {
-      setSwitching(false);
-    }
-  };
-
-  const handleCreateNewAccount = async () => {
-    setSwitchError('');
-    setSwitchStatus('');
-    setSwitching(true);
-    try {
-      const res = await fetch('/api/buyers/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'new' }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        onAccountSwitched(data.buyerId, data);
-        setSwitchStatus(dict.profile.switchedSuccess);
-        window.setTimeout(() => setSwitchStatus(''), 2400);
-      }
-    } finally {
-      setSwitching(false);
+      setSavingProfile(false);
     }
   };
 
@@ -151,101 +151,150 @@ export function ProfileView({
 
   const handleSaveAddress = async (e: React.FormEvent) => {
     e.preventDefault();
-    const url = editingAddrId ? `/api/addresses/${editingAddrId}` : '/api/addresses';
-    const method = editingAddrId ? 'PUT' : 'POST';
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...addrForm, buyerId }),
-    });
-    if (res.ok) {
-      const updated = (await res.json()) as Address[];
-      onAddressesUpdated(updated);
+    setSavingAddr(true);
+    try {
+      await saveAddressDoc(
+        buyerId,
+        {
+          ...(editingAddrId ? { id: editingAddrId } : {}),
+          ...addrForm,
+        },
+        addresses,
+        { name: authName || profile.name, email: authEmail || profile.email }
+      );
       setShowAddrForm(false);
+    } finally {
+      setSavingAddr(false);
     }
   };
 
   const handleSetDefault = async (addrId: string) => {
-    const res = await fetch(`/api/addresses/${addrId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ buyerId, isDefault: true }),
-    });
-    if (res.ok) {
-      onAddressesUpdated((await res.json()) as Address[]);
-    }
+    await setDefaultAddressDoc(buyerId, addrId, addresses);
   };
 
   const handleDeleteAddress = async (addrId: string) => {
-    const res = await fetch(
-      `/api/addresses/${addrId}?buyerId=${encodeURIComponent(buyerId)}`,
-      { method: 'DELETE' }
-    );
-    if (res.ok) {
-      onAddressesUpdated((await res.json()) as Address[]);
-    }
+    await deleteAddressDoc(buyerId, addrId, addresses);
   };
 
   return (
     <section className="space-y-8">
-      <div className="border-b border-zinc-200 dark:border-zinc-800 pb-5">
-        <h1 className="font-display text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
-          {dict.profile.heading}
-        </h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">{dict.profile.subtitle}</p>
-      </div>
-
-      {/* Account Session & Multi-User Switcher */}
-      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Users className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-            <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              {dict.profile.accountSection}
-            </h2>
-            <span className="font-mono-tabular text-[11px] text-zinc-500 dark:text-zinc-400">
-              ({buyerId})
-            </span>
-          </div>
-          <button
-            type="button"
-            disabled={switching}
-            onClick={handleCreateNewAccount}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 whitespace-nowrap cursor-pointer"
-          >
-            <UserPlus className="w-3.5 h-3.5" />
-            <span>{dict.profile.newAccount}</span>
-          </button>
+      <div className="border-b border-zinc-200 dark:border-zinc-800 pb-5 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-zinc-100">
+            {dict.profile.heading}
+          </h1>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">{dict.profile.subtitle}</p>
         </div>
 
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{dict.profile.accountHint}</p>
-
-        <form onSubmit={handleFindAccount} className="flex flex-wrap items-center gap-2">
-          <input
-            type="text"
-            value={lookupInput}
-            onChange={(e) => setLookupInput(e.target.value)}
-            placeholder={dict.profile.findPlaceholder}
-            className="flex-1 min-w-[220px] rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-zinc-100"
-          />
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] px-4 py-2.5">
+          <div className="text-xs">
+            <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+              {profile.name !== 'Guest Buyer' ? profile.name : authName || authPhone || 'Buyer'}
+            </div>
+            <div className="text-zinc-500 dark:text-zinc-400 font-mono-tabular">
+              {authPhone || profile.phone || authEmail || profile.email}
+            </div>
+          </div>
+          {onSwitchAccount && (
+            <button
+              type="button"
+              onClick={onSwitchAccount}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>{dict.profile.switchAccountBtn}</span>
+            </button>
+          )}
           <button
-            type="submit"
-            disabled={switching || !lookupInput.trim()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-40 whitespace-nowrap cursor-pointer"
+            type="button"
+            onClick={() => void onSignOut()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer"
           >
-            <LogIn className="w-3.5 h-3.5" />
-            <span>{dict.profile.switchAccount}</span>
+            <LogOut className="w-3.5 h-3.5" />
+            <span>{dict.auth.signOut}</span>
           </button>
-        </form>
+        </div>
+      </div>
 
-        {switchError && (
-          <p className="text-xs font-medium text-red-600 dark:text-red-400">{switchError}</p>
-        )}
-        {switchStatus && (
-          <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
-            {switchStatus}
-          </p>
-        )}
+      {/* Synced Account & Returning History Summary */}
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <span>{dict.profile.accountSection}</span>
+            </h2>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+              {dict.profile.accountHint}
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/30 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+            {authPhone ? dict.profile.verifiedViaPhone : dict.profile.verifiedViaGmail}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <button
+            type="button"
+            onClick={onGoToOrders}
+            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40 p-3.5 text-left hover:border-zinc-400 dark:hover:border-zinc-600 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 mb-1">
+              <span>{dict.profile.pastOrdersLabel}</span>
+              <Package className="w-3.5 h-3.5" />
+            </div>
+            <div className="font-mono-tabular text-lg font-bold text-zinc-900 dark:text-zinc-100">
+              {ordersCount}
+            </div>
+            <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-300 underline mt-1">
+              {dict.profile.viewOrdersBtn}
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={onGoToWishlist}
+            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40 p-3.5 text-left hover:border-zinc-400 dark:hover:border-zinc-600 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 mb-1">
+              <span>{dict.profile.savedWishlistLabel}</span>
+              <Heart className="w-3.5 h-3.5" />
+            </div>
+            <div className="font-mono-tabular text-lg font-bold text-zinc-900 dark:text-zinc-100">
+              {wishlistCount}
+            </div>
+            <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-300 underline mt-1">
+              {dict.profile.viewWishlistBtn}
+            </div>
+          </button>
+
+          <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40 p-3.5 text-left">
+            <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 mb-1">
+              <span>{dict.profile.savedAddressesLabel}</span>
+              <MapPin className="w-3.5 h-3.5" />
+            </div>
+            <div className="font-mono-tabular text-lg font-bold text-zinc-900 dark:text-zinc-100">
+              {addresses.length}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenChat}
+            className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40 p-3.5 text-left hover:border-zinc-400 dark:hover:border-zinc-600 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 mb-1">
+              <span>{dict.profile.chatHistoryLabel}</span>
+              <MessageSquare className="w-3.5 h-3.5" />
+            </div>
+            <div className="font-mono-tabular text-lg font-bold text-zinc-900 dark:text-zinc-100">
+              {chatCount}
+            </div>
+            <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-300 underline mt-1">
+              {dict.profile.openChatBtn}
+            </div>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
@@ -294,7 +343,8 @@ export function ProfileView({
 
           <button
             type="submit"
-            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2.5 text-sm font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors cursor-pointer"
+            disabled={savingProfile}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2.5 text-sm font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors cursor-pointer"
           >
             {profileSaved ? (
               <>
@@ -438,7 +488,8 @@ export function ProfileView({
                 </button>
                 <button
                   type="submit"
-                  className="rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 cursor-pointer"
+                  disabled={savingAddr}
+                  className="rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs font-semibold text-white dark:text-zinc-900 disabled:opacity-50 cursor-pointer"
                 >
                   {dict.profile.saveAddress}
                 </button>

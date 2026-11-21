@@ -1,18 +1,31 @@
 import { CheckCircle2, Clock, Truck, PackageCheck, XCircle, MessageSquare } from 'lucide-react';
-import type { Language, Order, OrderStatus } from '../types';
+import type { Language, Order, OrderStatus, Product } from '../types';
 import { formatDateTime, formatMMK } from '../utils/format';
 import { t } from '../i18n';
 import { SmartImage } from './SmartImage';
+import { BuyerAuthPanel } from './BuyerAuthPanel';
 
 interface OrdersViewProps {
+  isAuthenticated: boolean;
+  loading?: boolean;
   orders: Order[];
+  products?: Product[];
   lang: Language;
+  onSignInGoogle: () => Promise<void>;
   onChatAboutOrder: (order: Order) => void;
 }
 
 const PROGRESS_STEPS: OrderStatus[] = ['Pending', 'Verified', 'Shipped', 'Delivered'];
 
-export function OrdersView({ orders, lang, onChatAboutOrder }: OrdersViewProps) {
+export function OrdersView({
+  isAuthenticated,
+  loading = false,
+  orders,
+  products = [],
+  lang,
+  onSignInGoogle,
+  onChatAboutOrder,
+}: OrdersViewProps) {
   const dict = t(lang);
 
   const getStatusColor = (status: OrderStatus) => {
@@ -54,7 +67,21 @@ export function OrdersView({ orders, lang, onChatAboutOrder }: OrdersViewProps) 
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">{dict.orders.subtitle}</p>
       </div>
 
-      {orders.length === 0 ? (
+      {!isAuthenticated ? (
+        <div className="max-w-lg rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-6">
+          <BuyerAuthPanel
+            lang={lang}
+            onSignInGoogle={onSignInGoogle}
+            title={dict.auth.buyerGateTitle}
+            subtitle={dict.auth.buyerGateDesc}
+          />
+        </div>
+      ) : loading ? (
+        <div className="space-y-4">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">{dict.profile.loadingHistory}</p>
+          <div className="h-44 rounded-xl bg-zinc-200 dark:bg-zinc-800 animate-pulse" />
+        </div>
+      ) : orders.length === 0 ? (
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-12 text-center">
           <h3 className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100 mb-1">
             {dict.orders.empty}
@@ -168,11 +195,16 @@ export function OrdersView({ orders, lang, onChatAboutOrder }: OrdersViewProps) 
                 {/* Items & Address Details */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6">
                   <div className="md:col-span-2 space-y-3">
-                    {order.items.map((item, i) => (
+                    {order.items.map((item, i) => {
+                      const fallbackImg =
+                        item.image ||
+                        products.find((p) => p.id === item.productId)?.image ||
+                        '';
+                      return (
                       <div key={`${item.productId}-${i}`} className="flex items-center gap-3.5">
                         <div className="h-14 w-16 shrink-0 overflow-hidden rounded-lg bg-zinc-100 dark:bg-zinc-900">
                           <SmartImage
-                            src={item.image}
+                            src={fallbackImg}
                             alt={item.name}
                             className="h-full w-full object-cover"
                           />
@@ -189,7 +221,8 @@ export function OrdersView({ orders, lang, onChatAboutOrder }: OrdersViewProps) 
                           {formatMMK(item.price * item.quantity)}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <div className="flex flex-col justify-between gap-4 md:border-l md:border-zinc-100 dark:md:border-zinc-800 md:pl-6">
