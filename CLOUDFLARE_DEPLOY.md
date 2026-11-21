@@ -12,12 +12,12 @@ VPN မလိုဘဲ Buyer များနှင့် Admin ပါ တို�
 
 ---
 
-## 2. SPA Routing ဖိုင် စစ်ဆေးခြင်း
-Project ထဲတွင် `public/_redirects` ဖိုင် ပါဝင်ပြီးဖြစ်ပါသည်:
-```text
-/*  /index.html  200
-```
-`npm run build` လုပ်သည့်အခါ Vite က `dist/_redirects` အဖြစ် အလိုအလျောက် ကူးပေးမည်ဖြစ်၍ `/seller`, `/admin`, `/wishlist`, `/orders`, `/profile` စာမျက်နှာများကို တိုက်ရိုက်ဖွင့်လျှင် 404 Error မတက်ဘဲ ပုံမှန်ပွင့်ပါမည်။
+## 2. SPA Routing စစ်ဆေးခြင်း
+Project ထဲရှိ `wrangler.jsonc` ဖိုင်တွင် `"not_found_handling": "single-page-application"` ကို ထည့်သွင်းထားပြီးဖြစ်ပါသည် (Cloudflare Pages တွင်လည်း `404.html` မရှိပါက SPA fallback ကို အလိုအလျောက် လုပ်ဆောင်ပေးပါသည်)။
+
+> **သတိပြုရန်**: Cloudflare Workers Static Assets တွင် `_redirects` ဖိုင်ထဲ `/* /index.html 200` ထည့်ပါက Infinite Loop ဖြစ်ပြီး **`[code: 100324]`** Error တက်တတ်သောကြောင့် `_redirects` ဖိုင် မသုံးဘဲ `wrangler.jsonc` ဖြင့်သာ SPA Routing ကို ချိန်ညှိထားပါသည်။
+
+`/seller`, `/admin`, `/wishlist`, `/orders`, `/profile` စာမျက်နှာများကို တိုက်ရိုက်ဖွင့်ခြင်း သို့မဟုတ် Refresh လုပ်ခြင်းများတွင် 404 Error မတက်ဘဲ ပုံမှန်ပွင့်ပါမည်။
 
 ---
 
