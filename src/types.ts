@@ -155,6 +155,20 @@ export interface StoreBrandConfig {
   showLogoBanner: boolean;
 }
 
+export type NotificationType = 'promo' | 'order' | 'restock' | 'info';
+
+export interface StoreNotification {
+  id: string;
+  targetBuyerId: string;
+  targetBuyerName: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  actionTarget?: string;
+  senderName: string;
+  createdAt: string;
+}
+
 export interface BootstrapPayload {
   products: Product[];
   categories: string[];

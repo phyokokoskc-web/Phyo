@@ -30,17 +30,20 @@ import {
   Star,
   ImagePlus,
   Loader2,
+  Bell,
 } from 'lucide-react';
 import type {
   BankAccount,
   BannerSlide,
   ChatThread,
   Language,
+  NotificationType,
   Order,
   OrderStatus,
   PaymentSettings,
   Product,
   StoreBrandConfig,
+  StoreNotification,
 } from '../types';
 import { formatDateTime, formatMMK, formatShortDate } from '../utils/format';
 import { readImageFileAsDataUrl } from '../utils/image';
@@ -50,6 +53,7 @@ import { StoreLogoBanner } from './StoreLogoBanner';
 import {
   deleteBannerDoc,
   deleteCategoryBatch,
+  deleteNotificationDoc,
   deleteProductDoc,
   quickPatchProductDoc,
   renameCategoryBatch,
@@ -59,6 +63,7 @@ import {
   savePaymentConfigDoc,
   saveProductDoc,
   saveStoreBrandDoc,
+  sendNotificationDoc,
   syncLocalSeedToFirestoreIfEmpty,
   updateOrderStatusDoc,
 } from '../services/firestoreStore';
@@ -71,6 +76,7 @@ interface AdminDashboardProps {
   banners: BannerSlide[];
   orders: Order[];
   chatThreads: ChatThread[];
+  notifications: StoreNotification[];
   activeThreadId?: string;
   paymentSettings: PaymentSettings;
   brand: StoreBrandConfig;
@@ -86,7 +92,14 @@ interface AdminDashboardProps {
   onMarkThreadRead: (threadId: string) => void;
 }
 
-type AdminTab = 'overview' | 'products' | 'orders' | 'storefront' | 'payments' | 'messages';
+type AdminTab =
+  | 'overview'
+  | 'products'
+  | 'orders'
+  | 'storefront'
+  | 'payments'
+  | 'messages'
+  | 'notifications';
 
 export function AdminDashboard({
   lang,
@@ -96,6 +109,7 @@ export function AdminDashboard({
   banners,
   orders,
   chatThreads,
+  notifications,
   activeThreadId: controlledThreadId,
   paymentSettings,
   brand,
@@ -243,6 +257,103 @@ export function AdminDashboard({
   const [chatLightboxImage, setChatLightboxImage] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const adminChatFileRef = useRef<HTMLInputElement | null>(null);
+
+  // Seller -> Buyer Real-Time Notifications State
+  const [notifTargetId, setNotifTargetId] = useState<string>('all');
+  const [notifType, setNotifType] = useState<NotificationType>('promo');
+  const [notifTitle, setNotifTitle] = useState('');
+  const [notifMessage, setNotifMessage] = useState('');
+  const [notifActionTarget, setNotifActionTarget] = useState<string>('none');
+  const [sendingNotif, setSendingNotif] = useState(false);
+  const [notifSuccess, setNotifSuccess] = useState(false);
+  const [notifError, setNotifError] = useState('');
+  const [confirmDeleteNotifId, setConfirmDeleteNotifId] = useState<string | null>(null);
+  const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
+
+  const knownBuyers = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; phone: string }>();
+    for (const o of orders) {
+      if (o.buyerId && o.buyerId !== 'guest' && !map.has(o.buyerId)) {
+        map.set(o.buyerId, {
+          id: o.buyerId,
+          name: o.customerName || 'Buyer',
+          phone: o.customerPhone || '',
+        });
+      }
+    }
+    for (const th of chatThreads) {
+      if (th.buyerId && th.buyerId !== 'guest' && !map.has(th.buyerId)) {
+        map.set(th.buyerId, {
+          id: th.buyerId,
+          name: th.buyerName || 'Buyer',
+          phone: th.buyerPhone || '',
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [orders, chatThreads]);
+
+  const openNotifyBuyer = (
+    buyerIdVal: string,
+    defaultType: NotificationType = 'order',
+    defaultTitle = '',
+    defaultAction = 'orders'
+  ) => {
+    setNotifTargetId(buyerIdVal || 'all');
+    setNotifType(defaultType);
+    if (defaultTitle) setNotifTitle(defaultTitle);
+    setNotifActionTarget(defaultAction);
+    setNotifError('');
+    setNotifSuccess(false);
+    setTab('notifications');
+  };
+
+  const handleSendNotification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!notifTitle.trim() || !notifMessage.trim() || sendingNotif) return;
+    setSendingNotif(true);
+    setNotifError('');
+    setNotifSuccess(false);
+    try {
+      const targetBuyer =
+        notifTargetId === 'all'
+          ? null
+          : knownBuyers.find((b) => b.id === notifTargetId) || null;
+      await sendNotificationDoc({
+        targetBuyerId: notifTargetId,
+        targetBuyerName:
+          notifTargetId === 'all'
+            ? dict.notifications.broadcastTag
+            : targetBuyer?.name || 'Buyer',
+        type: notifType,
+        title: notifTitle,
+        message: notifMessage,
+        actionTarget: notifActionTarget,
+        senderName: brand.storeName || dict.brand,
+      });
+      setNotifTitle('');
+      setNotifMessage('');
+      setNotifSuccess(true);
+      window.setTimeout(() => setNotifSuccess(false), 3000);
+    } catch {
+      setNotifError(dict.notifications.sendError);
+    } finally {
+      setSendingNotif(false);
+    }
+  };
+
+  const handleDeleteNotification = async (notifId: string) => {
+    setDeletingNotifId(notifId);
+    setNotifError('');
+    try {
+      await deleteNotificationDoc(notifId);
+      setConfirmDeleteNotifId((curr) => (curr === notifId ? null : curr));
+    } catch {
+      setNotifError(dict.notifications.sendError);
+    } finally {
+      setDeletingNotifId(null);
+    }
+  };
 
   const filteredChatThreads = useMemo(() => {
     const q = threadSearch.trim().toLowerCase();
@@ -754,6 +865,7 @@ export function AdminDashboard({
                 { id: 'storefront', label: dict.admin.storefrontTab, icon: Images },
                 { id: 'payments', label: dict.admin.paymentsTab, icon: CreditCard },
                 { id: 'messages', label: dict.admin.messages, icon: MessageSquare, badge: unreadTotal },
+                { id: 'notifications', label: dict.notifications.adminTab, icon: Bell },
               ] as const
             ).map((item) => {
               const Icon = item.icon;
@@ -838,6 +950,8 @@ export function AdminDashboard({
                 ? dict.admin.storefrontTab
                 : tab === 'payments'
                 ? dict.admin.paymentsTab
+                : tab === 'notifications'
+                ? dict.notifications.adminTab
                 : dict.admin.messages}
             </span>
           </div>
@@ -1594,6 +1708,25 @@ export function AdminDashboard({
                           <span>{dict.admin.deliverOrder}</span>
                         </button>
                       )}
+                      {order.buyerId && order.buyerId !== 'guest' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openNotifyBuyer(
+                              order.buyerId,
+                              'order',
+                              lang === 'mm'
+                                ? `အော်ဒါ ${order.id} အခြေအနေ`
+                                : `Order ${order.id} Update`,
+                              'orders'
+                            )
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer"
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>{dict.notifications.notifyBuyerShortcut}</span>
+                        </button>
+                      )}
                       {order.status !== 'Delivered' && order.status !== 'Cancelled' && (
                         <button
                           type="button"
@@ -2344,11 +2477,25 @@ export function AdminDashboard({
                         </div>
                       )}
                     </div>
-                    {activeThread.messages.length > 0 && (
-                      <span className="shrink-0 font-mono-tabular text-[11px] text-zinc-500 dark:text-zinc-400">
-                        {activeThread.messages.length} {dict.chat.messagesUnit}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {activeThread.buyerId && activeThread.buyerId !== 'guest' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openNotifyBuyer(activeThread.buyerId, 'info', '', 'chat')
+                          }
+                          className="inline-flex items-center gap-1 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                        >
+                          <Bell className="w-3 h-3" />
+                          <span>{dict.notifications.notifyBuyerShortcut}</span>
+                        </button>
+                      )}
+                      {activeThread.messages.length > 0 && (
+                        <span className="shrink-0 font-mono-tabular text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {activeThread.messages.length} {dict.chat.messagesUnit}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
                     {loadingActiveThread && activeThread.messages.length === 0 ? (
@@ -2530,6 +2677,275 @@ export function AdminDashboard({
               ) : (
                 <div className="flex-1 flex items-center justify-center text-xs text-zinc-500 p-6 text-center">
                   {dict.chat.selectThread}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* BUYER REAL-TIME NOTIFICATIONS TAB */}
+        {tab === 'notifications' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Composer */}
+            <form
+              onSubmit={handleSendNotification}
+              className="lg:col-span-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/30 p-5 space-y-4 h-fit"
+            >
+              <div>
+                <h3 className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                  {dict.notifications.composerTitle}
+                </h3>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                  {dict.notifications.composerSub}
+                </p>
+              </div>
+
+              {/* Quick Presets */}
+              <div className="space-y-1.5">
+                <span className="block text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                  {dict.notifications.quickPresetsLabel}
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNotifType('promo');
+                      setNotifTitle(dict.notifications.presetPromoTitle);
+                      setNotifMessage(dict.notifications.presetPromoMsg);
+                      setNotifActionTarget('shop');
+                    }}
+                    className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                  >
+                    {dict.notifications.types.promo}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNotifType('restock');
+                      setNotifTitle(dict.notifications.presetRestockTitle);
+                      setNotifMessage(dict.notifications.presetRestockMsg);
+                      setNotifActionTarget('shop');
+                    }}
+                    className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                  >
+                    {dict.notifications.types.restock}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNotifType('info');
+                      setNotifTitle(dict.notifications.presetDeliveryTitle);
+                      setNotifMessage(dict.notifications.presetDeliveryMsg);
+                      setNotifActionTarget('orders');
+                    }}
+                    className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                  >
+                    {dict.notifications.types.info}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                    {dict.notifications.targetLabel}
+                  </label>
+                  <select
+                    value={notifTargetId}
+                    onChange={(e) => setNotifTargetId(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                  >
+                    <option value="all">{dict.notifications.allBuyersOption}</option>
+                    {knownBuyers.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name} {b.phone ? `(${b.phone})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                    {dict.notifications.typeLabel}
+                  </label>
+                  <select
+                    value={notifType}
+                    onChange={(e) => setNotifType(e.target.value as NotificationType)}
+                    className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                  >
+                    <option value="promo">{dict.notifications.types.promo}</option>
+                    <option value="restock">{dict.notifications.types.restock}</option>
+                    <option value="order">{dict.notifications.types.order}</option>
+                    <option value="info">{dict.notifications.types.info}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    {dict.notifications.titleLabel}
+                  </label>
+                  <span className="text-[10px] font-mono-tabular text-zinc-400">
+                    {notifTitle.length}/140
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  required
+                  maxLength={140}
+                  value={notifTitle}
+                  onChange={(e) => setNotifTitle(e.target.value)}
+                  placeholder={dict.notifications.titlePlaceholder}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    {dict.notifications.messageLabel}
+                  </label>
+                  <span className="text-[10px] font-mono-tabular text-zinc-400">
+                    {notifMessage.length}/600
+                  </span>
+                </div>
+                <textarea
+                  rows={3}
+                  required
+                  maxLength={600}
+                  value={notifMessage}
+                  onChange={(e) => setNotifMessage(e.target.value)}
+                  placeholder={dict.notifications.messagePlaceholder}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                  {dict.notifications.actionLabel}
+                </label>
+                <select
+                  value={notifActionTarget}
+                  onChange={(e) => setNotifActionTarget(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
+                >
+                  <option value="none">{dict.notifications.actionNone}</option>
+                  <option value="shop">{dict.notifications.actionShop}</option>
+                  <option value="orders">{dict.notifications.actionOrders}</option>
+                  <option value="chat">{dict.notifications.actionChat}</option>
+                  {categories.map((cat) => (
+                    <option key={cat} value={`category:${cat}`}>
+                      {lang === 'mm' ? `Category: ${cat}` : `Category: ${cat}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {notifError && (
+                <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                  {notifError}
+                </p>
+              )}
+              {notifSuccess && (
+                <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{dict.notifications.sentSuccess}</span>
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={sendingNotif || !notifTitle.trim() || !notifMessage.trim()}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2.5 text-xs font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 cursor-pointer"
+              >
+                {sendingNotif ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {sendingNotif ? dict.notifications.sendingBtn : dict.notifications.sendBtn}
+                </span>
+              </button>
+            </form>
+
+            {/* Sent Notifications History */}
+            <div className="lg:col-span-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-200 dark:border-zinc-800">
+                <h3 className="font-display text-base font-semibold text-zinc-900 dark:text-zinc-100">
+                  {dict.notifications.historyTitle}
+                </h3>
+                <span className="font-mono-tabular text-xs text-zinc-500 dark:text-zinc-400">
+                  {notifications.length}
+                </span>
+              </div>
+
+              {notifications.length === 0 ? (
+                <div className="py-12 text-center text-xs text-zinc-500 dark:text-zinc-400">
+                  {dict.notifications.historyEmpty}
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[540px] overflow-y-auto pr-1">
+                  {notifications.map((n) => {
+                    const isConfirming = confirmDeleteNotifId === n.id;
+                    const isDeleting = deletingNotifId === n.id;
+                    return (
+                      <div
+                        key={n.id}
+                        className="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3.5 space-y-1.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                            <span className="font-semibold px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200">
+                              {dict.notifications.types[n.type]}
+                            </span>
+                            <span className="font-medium text-zinc-600 dark:text-zinc-300">
+                              → {n.targetBuyerId === 'all' ? dict.notifications.broadcastTag : n.targetBuyerName}
+                            </span>
+                          </div>
+                          {isConfirming ? (
+                            <span className="inline-flex items-center gap-1.5 text-[11px] shrink-0">
+                              <button
+                                type="button"
+                                disabled={isDeleting}
+                                onClick={() => void handleDeleteNotification(n.id)}
+                                className="font-semibold text-red-600 dark:text-red-400 hover:underline disabled:opacity-50 cursor-pointer"
+                              >
+                                {isDeleting ? dict.chat.deleting : dict.chat.confirmDeleteMessage}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isDeleting}
+                                onClick={() => setConfirmDeleteNotifId(null)}
+                                className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
+                              >
+                                {dict.chat.cancelDelete}
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteNotifId(n.id)}
+                              aria-label={dict.chat.deleteMessage}
+                              className="text-zinc-400 hover:text-red-600 dark:hover:text-red-400 cursor-pointer shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                          {n.title}
+                        </p>
+                        <p className="text-xs text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap">
+                          {n.message}
+                        </p>
+                        <p className="text-[10px] font-mono-tabular text-zinc-400 dark:text-zinc-500">
+                          {formatDateTime(n.createdAt)}
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

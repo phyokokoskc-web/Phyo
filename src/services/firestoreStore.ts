@@ -17,6 +17,7 @@ import type {
   Address,
   BannerSlide,
   BootstrapPayload,
+  NotificationType,
   Order,
   OrderItem,
   OrderStatus,
@@ -1043,5 +1044,60 @@ export async function syncLocalSeedToFirestoreIfEmpty(): Promise<boolean> {
   } catch (err) {
     console.error('Initial cloud seed error:', err);
     return false;
+  }
+}
+
+export async function sendNotificationDoc(input: {
+  targetBuyerId: string;
+  targetBuyerName: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  actionTarget?: string;
+  senderName: string;
+}): Promise<string> {
+  const notifId = sanitizeId(`notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  const path = `notifications/${notifId}`;
+  const cleanTitle = clampStr(input.title.trim(), 140);
+  const cleanMessage = clampStr(input.message.trim(), 600);
+  if (!cleanTitle || !cleanMessage) {
+    throw new Error('NOTIFICATION_TITLE_AND_MESSAGE_REQUIRED');
+  }
+  const targetId =
+    input.targetBuyerId === 'all' ? 'all' : sanitizeId(input.targetBuyerId || 'all');
+  const payload: Record<string, unknown> = {
+    id: notifId,
+    targetBuyerId: targetId,
+    targetBuyerName: clampStr(
+      input.targetBuyerName.trim() || (targetId === 'all' ? 'All Buyers' : 'Buyer'),
+      120
+    ),
+    type: (['promo', 'order', 'restock', 'info'] as const).includes(input.type)
+      ? input.type
+      : 'info',
+    title: cleanTitle,
+    message: cleanMessage,
+    senderName: clampStr(input.senderName.trim() || 'Shoptopia', 80, 'Shoptopia'),
+    createdAt: new Date().toISOString(),
+    serverCreatedAt: serverTimestamp(),
+  };
+  if (input.actionTarget && input.actionTarget !== 'none') {
+    payload.actionTarget = clampStr(input.actionTarget, 120);
+  }
+  try {
+    await setDoc(doc(db, 'notifications', notifId), payload);
+    return notifId;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteNotificationDoc(notifId: string): Promise<void> {
+  const cleanId = sanitizeId(notifId);
+  const path = `notifications/${cleanId}`;
+  try {
+    await deleteDoc(doc(db, 'notifications', cleanId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
   }
 }

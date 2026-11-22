@@ -94,4 +94,19 @@ export const DIRTY_DOZEN_CASES = [
     operation: 'create',
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: '13. Buyer spoofing store notification broadcast',
+    path: 'notifications/notif-evil',
+    auth: { uid: 'buyer-a', email_verified: true, email: 'buyera@gmail.com' },
+    operation: 'create',
+    payload: { id: 'notif-evil', targetBuyerId: 'all', type: 'promo', title: 'Fake Promo', message: 'Free' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '14. Buyer B reading private notification targeted to Buyer A',
+    path: 'notifications/notif-buyer-a',
+    auth: { uid: 'buyer-b', email_verified: true, email: 'buyerb@gmail.com' },
+    operation: 'get',
+    expected: 'PERMISSION_DENIED',
+  },
 ] as const;

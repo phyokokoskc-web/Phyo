@@ -163,6 +163,24 @@
         "read": { "type": "boolean" }
       },
       "required": ["id", "threadId", "senderRole", "senderUid", "senderName", "text", "createdAt", "serverCreatedAt", "read"]
+    },
+    "StoreNotification": {
+      "title": "StoreNotification",
+      "description": "Real-time notification broadcast or targeted message sent from the seller admin to buyers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetBuyerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetBuyerName": { "type": "string", "maxLength": 120 },
+        "type": { "type": "string", "enum": ["promo", "order", "restock", "info"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "actionTarget": { "type": "string", "maxLength": 120 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "targetBuyerId", "targetBuyerName", "type", "title", "message", "senderName", "createdAt", "serverCreatedAt"]
     }
   },
   "firestore": {
@@ -201,6 +219,10 @@
     "/chatThreads/{threadId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessage" },
       "description": "Messages belonging to a support chat thread."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/StoreNotification" },
+      "description": "Real-time seller notifications (broadcast 'all' or targeted to a specific buyer UID); writable only by admin."
     }
   }
 }

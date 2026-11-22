@@ -20,3 +20,4 @@
 10. **Orphaned Address / Message**: Buyer creates `/users/{uid}/addresses/addr-1` when `/users/{uid}` does not exist -> `PERMISSION_DENIED` (`exists(...)` master gate fails).
 11. **Backdated Timestamp Forgery**: Client sends client timestamp instead of `serverTimestamp()` -> `PERMISSION_DENIED` (`== request.time` fails).
 12. **Resource Poisoning / Oversized String**: Admin or buyer attempts to write a 1.5MB string into `name` or `id` -> `PERMISSION_DENIED` (`.size()` / `isValidId()` fails).
+13. **Non-Admin Notification Forgery & Targeted Read Isolation**: Verified buyer attempts `create` on `/notifications/notif-evil` or Buyer B attempts `get`/`list` on a notification where `targetBuyerId == 'buyer-a'` -> `PERMISSION_DENIED`.

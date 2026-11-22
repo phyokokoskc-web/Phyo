@@ -273,6 +273,27 @@ service cloud.firestore {
         && data.read is bool;
     }
 
+    function isValidNotification(data) {
+      return data.keys().hasAll([
+          'id', 'targetBuyerId', 'targetBuyerName', 'type',
+          'title', 'message', 'senderName', 'createdAt', 'serverCreatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'targetBuyerId', 'targetBuyerName', 'type',
+          'title', 'message', 'actionTarget', 'senderName', 'createdAt', 'serverCreatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.targetBuyerId)
+        && data.targetBuyerName is string && data.targetBuyerName.size() <= 120
+        && data.type in ['promo', 'order', 'restock', 'info']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 600
+        && isOptString(data, 'actionTarget', 120)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.serverCreatedAt is timestamp;
+    }
+
     // --- Collection Rules ---
     match /test/connection {
       allow get: if true;
@@ -503,6 +524,29 @@ service cloud.firestore {
             )
           );
       }
+    }
+
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && (
+        isAdmin() ||
+        existing().targetBuyerId == 'all' ||
+        (isSignedIn() && existing().targetBuyerId == request.auth.uid)
+      );
+      allow list: if isAdmin() ||
+        resource.data.targetBuyerId == 'all' ||
+        (isSignedIn() && resource.data.targetBuyerId == request.auth.uid);
+      allow create: if isAdmin()
+        && isValidId(notifId)
+        && isValidNotification(incoming())
+        && incoming().id == notifId
+        && incoming().serverCreatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(notifId)
+        && isValidNotification(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().serverCreatedAt == existing().serverCreatedAt;
+      allow delete: if isAdmin() && isValidId(notifId);
     }
   }
 }

@@ -13,6 +13,7 @@ import {
   User as UserIcon,
   LayoutGrid,
   List,
+  Bell,
 } from 'lucide-react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
@@ -28,6 +29,7 @@ import type {
   PaymentSettings,
   Product,
   StoreBrandConfig,
+  StoreNotification,
   UserProfile,
 } from './types';
 import { t } from './i18n';
@@ -61,6 +63,10 @@ import { WishlistView } from './components/WishlistView';
 import { LiveChatWidget } from './components/LiveChatWidget';
 import { AdminDashboard } from './components/AdminDashboard';
 import { BuyerAuthPanel } from './components/BuyerAuthPanel';
+import {
+  BuyerNotificationsDrawer,
+  LiveNotificationBanner,
+} from './components/BuyerNotificationsDrawer';
 
 type AppView = 'shop' | 'wishlist' | 'orders' | 'profile' | 'admin';
 type SortOption = 'popular' | 'price-asc' | 'price-desc' | 'newest';
@@ -223,6 +229,25 @@ export default function App() {
   const [profileLoadedUid, setProfileLoadedUid] = useState<string | null>(null);
   const [ordersLoadedUid, setOrdersLoadedUid] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // Real-Time Seller -> Buyer Notifications State
+  const [broadcastNotifs, setBroadcastNotifs] = useState<StoreNotification[]>([]);
+  const [targetedNotifs, setTargetedNotifs] = useState<StoreNotification[]>([]);
+  const [adminAllNotifs, setAdminAllNotifs] = useState<StoreNotification[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [liveIncomingNotif, setLiveIncomingNotif] = useState<StoreNotification | null>(null);
+  const [readNotifIds, setReadNotifIds] = useState<string[]>(() => {
+    try {
+      const raw = safeGetStorage('yg_read_notifs_guest');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const knownNotifIdsRef = useRef<Set<string>>(new Set());
+  const broadcastInitDoneRef = useRef(false);
+  const targetedInitDoneRef = useRef(false);
 
   const catalogRef = useRef<HTMLElement | null>(null);
   const dict = t(lang);
@@ -409,11 +434,38 @@ export default function App() {
       }
     );
 
+    const unsubBroadcastNotifs = onSnapshot(
+      query(collection(db, 'notifications'), where('targetBuyerId', '==', 'all')),
+      (snap) => {
+        const list: StoreNotification[] = [];
+        snap.forEach((docSnap) => {
+          list.push(docSnap.data() as StoreNotification);
+        });
+        list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setBroadcastNotifs(list);
+
+        if (!broadcastInitDoneRef.current) {
+          for (const n of list) knownNotifIdsRef.current.add(n.id);
+          broadcastInitDoneRef.current = true;
+        } else {
+          const fresh = list.find((n) => !knownNotifIdsRef.current.has(n.id));
+          for (const n of list) knownNotifIdsRef.current.add(n.id);
+          if (fresh && window.location.pathname !== '/seller' && window.location.pathname !== '/admin') {
+            setLiveIncomingNotif(fresh);
+          }
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'notifications');
+      }
+    );
+
     return () => {
       unsubProducts();
       unsubBanners();
       unsubCatalog();
       unsubPay();
+      unsubBroadcastNotifs();
     };
   }, []);
 
@@ -569,11 +621,110 @@ export default function App() {
       }
     );
 
+    let unsubUserNotifs = () => {};
+    if (isAdminStream) {
+      unsubUserNotifs = onSnapshot(
+        collection(db, 'notifications'),
+        (snap) => {
+          const list: StoreNotification[] = [];
+          snap.forEach((d) => list.push(d.data() as StoreNotification));
+          list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          setAdminAllNotifs(list);
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.LIST, 'notifications');
+        }
+      );
+    } else {
+      targetedInitDoneRef.current = false;
+      unsubUserNotifs = onSnapshot(
+        query(collection(db, 'notifications'), where('targetBuyerId', '==', authUser.uid)),
+        (snap) => {
+          const list: StoreNotification[] = [];
+          snap.forEach((d) => list.push(d.data() as StoreNotification));
+          list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          setTargetedNotifs(list);
+
+          if (!targetedInitDoneRef.current) {
+            for (const n of list) knownNotifIdsRef.current.add(n.id);
+            targetedInitDoneRef.current = true;
+          } else {
+            const fresh = list.find((n) => !knownNotifIdsRef.current.has(n.id));
+            for (const n of list) knownNotifIdsRef.current.add(n.id);
+            if (fresh) {
+              setLiveIncomingNotif(fresh);
+            }
+          }
+        },
+        (err) => {
+          handleFirestoreError(err, OperationType.LIST, 'notifications');
+        }
+      );
+    }
+
     return () => {
       unsubOrders();
       unsubThreads();
+      unsubUserNotifs();
     };
   }, [authReady, authUser, isAdminStream]);
+
+  // Sync read notification IDs per buyerId and clear targeted notifications on sign out
+  useEffect(() => {
+    if (!authUser) {
+      setTargetedNotifs([]);
+      setAdminAllNotifs([]);
+    }
+    try {
+      const raw = safeGetStorage(`yg_read_notifs_${buyerId}`);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setReadNotifIds(Array.isArray(parsed) ? (parsed as string[]) : []);
+    } catch {
+      setReadNotifIds([]);
+    }
+  }, [authUser, buyerId]);
+
+  useEffect(() => {
+    if (!liveIncomingNotif) return;
+    const timer = window.setTimeout(() => {
+      setLiveIncomingNotif((curr) => (curr?.id === liveIncomingNotif.id ? null : curr));
+    }, 9000);
+    return () => window.clearTimeout(timer);
+  }, [liveIncomingNotif]);
+
+  const buyerNotifications = useMemo(() => {
+    const map = new Map<string, StoreNotification>();
+    for (const n of broadcastNotifs) map.set(n.id, n);
+    if (authUser) {
+      for (const n of targetedNotifs) map.set(n.id, n);
+    }
+    return Array.from(map.values()).sort((a, b) =>
+      (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+  }, [broadcastNotifs, targetedNotifs, authUser]);
+
+  const unreadNotifCount = useMemo(() => {
+    const readSet = new Set(readNotifIds);
+    return buyerNotifications.filter((n) => !readSet.has(n.id)).length;
+  }, [buyerNotifications, readNotifIds]);
+
+  const markNotificationRead = useCallback(
+    (notifId: string) => {
+      setReadNotifIds((prev) => {
+        if (prev.includes(notifId)) return prev;
+        const next = [notifId, ...prev].slice(0, 300);
+        safeSetStorage(`yg_read_notifs_${buyerId}`, JSON.stringify(next));
+        return next;
+      });
+    },
+    [buyerId]
+  );
+
+  const markAllNotificationsRead = useCallback(() => {
+    const allIds = Array.from(new Set([...buyerNotifications.map((n) => n.id), ...readNotifIds])).slice(0, 300);
+    setReadNotifIds(allIds);
+    safeSetStorage(`yg_read_notifs_${buyerId}`, JSON.stringify(allIds));
+  }, [buyerNotifications, readNotifIds, buyerId]);
 
   // Active Chat Thread Messages Listener (Only attached when thread doc exists in Firestore)
   const activeListenThreadId = useMemo(() => {
@@ -1070,6 +1221,21 @@ export default function App() {
                     </span>
                   )}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setNotificationsOpen(true)}
+                  aria-label={dict.notifications.bellLabel}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 px-2.5 py-1 font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <Bell className="w-3.5 h-3.5" />
+                  <span>{dict.notifications.bellLabel}</span>
+                  {unreadNotifCount > 0 && (
+                    <span className="font-mono-tabular font-bold text-amber-600 dark:text-amber-400">
+                      ({unreadNotifCount})
+                    </span>
+                  )}
+                </button>
               </div>
             </div>
           </div>
@@ -1210,6 +1376,7 @@ export default function App() {
               banners={banners}
               orders={orders}
               chatThreads={hydratedChatThreads}
+              notifications={adminAllNotifs}
               activeThreadId={activeListenThreadId}
               paymentSettings={paymentSettings}
               brand={brand}
@@ -1686,6 +1853,55 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Buyer Real-Time Notifications Drawer & Live Incoming Alert Banner */}
+      {view !== 'admin' && (
+        <>
+          <BuyerNotificationsDrawer
+            open={notificationsOpen}
+            lang={lang}
+            notifications={buyerNotifications}
+            readIds={readNotifIds}
+            onClose={() => setNotificationsOpen(false)}
+            onMarkRead={markNotificationRead}
+            onMarkAllRead={markAllNotificationsRead}
+            onAction={(notif) => {
+              markNotificationRead(notif.id);
+              setNotificationsOpen(false);
+              if (notif.actionTarget === 'orders') {
+                navigate('orders');
+              } else if (notif.actionTarget === 'chat') {
+                openChatWithContext();
+              } else if (notif.actionTarget === 'shop') {
+                navigate('shop');
+              } else if (notif.actionTarget?.startsWith('category:')) {
+                jumpToCategory(notif.actionTarget.slice('category:'.length));
+              }
+            }}
+          />
+
+          <LiveNotificationBanner
+            lang={lang}
+            notification={liveIncomingNotif}
+            onDismiss={() => setLiveIncomingNotif(null)}
+            onOpen={(notif) => {
+              markNotificationRead(notif.id);
+              setLiveIncomingNotif(null);
+              if (notif.actionTarget === 'orders') {
+                navigate('orders');
+              } else if (notif.actionTarget === 'chat') {
+                openChatWithContext();
+              } else if (notif.actionTarget === 'shop') {
+                navigate('shop');
+              } else if (notif.actionTarget?.startsWith('category:')) {
+                jumpToCategory(notif.actionTarget.slice('category:'.length));
+              } else {
+                setNotificationsOpen(true);
+              }
+            }}
+          />
+        </>
       )}
 
       {/* Brief Non-Intrusive Feedback Toast */}
