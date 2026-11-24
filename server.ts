@@ -1574,8 +1574,25 @@ async function startServer() {
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, ws: false },
       appType: 'spa',
+    });
+    app.get('/@vite/client', async (_req, res, next) => {
+      try {
+        const result = await vite.transformRequest('/@vite/client');
+        if (result?.code) {
+          const patched = result.code.replace(
+            'transport.connect(createHMRHandler(handleMessage));',
+            '/* HMR disabled: WebSocket connect skipped */'
+          );
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          res.send(patched);
+          return;
+        }
+      } catch {
+        // Fall back to Vite middleware if needed
+      }
+      next();
     });
     app.use(vite.middlewares);
   } else {
