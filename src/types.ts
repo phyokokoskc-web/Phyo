@@ -17,6 +17,7 @@ export interface Product {
   rating: number;
   soldCount: number;
   image: string;
+  images?: string[];
   variants: string[];
   description: string;
   descriptionMm: string;

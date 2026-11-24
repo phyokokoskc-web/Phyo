@@ -17,6 +17,7 @@
         "rating": { "type": "number" },
         "soldCount": { "type": "number" },
         "image": { "type": "string", "maxLength": 800000 },
+        "images": { "type": "array" },
         "variants": { "type": "array" },
         "description": { "type": "string", "maxLength": 2000 },
         "descriptionMm": { "type": "string", "maxLength": 2000 },

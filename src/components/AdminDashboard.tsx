@@ -186,7 +186,7 @@ export function AdminDashboard({
     compareAtPrice: '',
     stock: 10,
     popular: false,
-    image: '',
+    images: ['', '', ''] as [string, string, string],
     variants: 'Standard',
     description: '',
     descriptionMm: '',
@@ -525,6 +525,21 @@ export function AdminDashboard({
 
   const readFileAsDataUrl = readImageFileAsDataUrl;
 
+  const galleryCompression = { maxDim: 800, quality: 0.74, maxChars: 220000 };
+
+  const getProductPhotos = (p: Product): string[] => {
+    const list: string[] = [];
+    for (const img of p.images || []) {
+      const clean = (img || '').trim();
+      if (clean && !list.includes(clean)) list.push(clean);
+    }
+    const primary = (p.image || '').trim();
+    if (primary && !list.includes(primary)) {
+      list.unshift(primary);
+    }
+    return list;
+  };
+
   // Product Actions
   const openAddProduct = () => {
     setEditingProd(null);
@@ -538,7 +553,7 @@ export function AdminDashboard({
       compareAtPrice: '',
       stock: 15,
       popular: false,
-      image: '/src/assets/images/prod_ceramic_set_1794984090569.jpg',
+      images: ['/src/assets/images/prod_ceramic_set_1794984090569.jpg', '', ''],
       variants: 'Standard',
       description: '',
       descriptionMm: '',
@@ -549,6 +564,7 @@ export function AdminDashboard({
   const openEditProduct = (p: Product) => {
     setEditingProd(p);
     setProdSaveError('');
+    const photos = getProductPhotos(p);
     setProdForm({
       name: p.name,
       nameMm: p.nameMm,
@@ -558,12 +574,41 @@ export function AdminDashboard({
       compareAtPrice: p.compareAtPrice ? String(p.compareAtPrice) : '',
       stock: p.stock,
       popular: p.popular,
-      image: p.image,
+      images: [photos[0] || '', photos[1] || '', photos[2] || ''],
       variants: p.variants.join(', '),
       description: p.description,
       descriptionMm: p.descriptionMm,
     });
     setModalOpen(true);
+  };
+
+  const updateProdImageSlot = (slotIdx: 0 | 1 | 2, val: string) => {
+    setProdForm((prev) => {
+      const next: [string, string, string] = [...prev.images] as [string, string, string];
+      next[slotIdx] = val;
+      return { ...prev, images: next };
+    });
+  };
+
+  const handleBatchUploadProductImages = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const selected = Array.from(files).slice(0, 3);
+    selected.forEach((file, fileIdx) => {
+      readFileAsDataUrl(
+        file,
+        (dataUrl) => {
+          setProdForm((prev) => {
+            const next: [string, string, string] = [...prev.images] as [string, string, string];
+            // Fill first empty slot, or replace slot matching fileIdx when all filled
+            const emptyIdx = next.findIndex((s) => !s.trim());
+            const targetIdx = emptyIdx >= 0 ? emptyIdx : Math.min(2, fileIdx);
+            next[targetIdx] = dataUrl;
+            return { ...prev, images: next };
+          });
+        },
+        galleryCompression
+      );
+    });
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -576,6 +621,7 @@ export function AdminDashboard({
         .split(',')
         .map((v) => v.trim())
         .filter(Boolean);
+      const cleanImages = prodForm.images.map((s) => s.trim()).filter(Boolean);
       const productPayload: Product = {
         id: editingProd ? editingProd.id : `prod-${Date.now()}`,
         sku: prodForm.sku.trim() || `YG-${Date.now().toString().slice(-4)}`,
@@ -588,7 +634,8 @@ export function AdminDashboard({
         popular: prodForm.popular,
         rating: editingProd?.rating ?? 4.9,
         soldCount: editingProd?.soldCount ?? 0,
-        image: prodForm.image.trim(),
+        image: cleanImages[0] || '',
+        images: cleanImages,
         variants: parsedVariants.length > 0 ? parsedVariants : ['Standard'],
         description: prodForm.description,
         descriptionMm: prodForm.descriptionMm || prodForm.description,
@@ -1389,6 +1436,12 @@ export function AdminDashboard({
                         alt={p.name}
                         className="h-full w-full object-cover"
                       />
+                      {getProductPhotos(p).length > 1 && (
+                        <div className="pointer-events-none absolute bottom-2 right-2 inline-flex items-center gap-1 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-mono-tabular font-medium text-white">
+                          <Images className="w-2.5 h-2.5" />
+                          <span>{getProductPhotos(p).length}</span>
+                        </div>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleQuickPatchProduct(p, { popular: !p.popular })}
@@ -3410,34 +3463,102 @@ export function AdminDashboard({
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1">
-                {dict.admin.imageLabel}
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={prodForm.image}
-                  onChange={(e) => setProdForm({ ...prodForm, image: e.target.value })}
-                  className="flex-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
-                />
-                <label className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer whitespace-nowrap">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>{dict.admin.uploadImage}</span>
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                  {dict.admin.imageLabel}
+                </label>
+                <label className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer whitespace-nowrap">
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  <span>{dict.admin.uploadMultipleImages}</span>
                   <input
                     type="file"
                     accept="image/*"
+                    multiple
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) {
-                        readFileAsDataUrl(f, (res) =>
-                          setProdForm((prev) => ({ ...prev, image: res }))
-                        );
-                      }
+                      handleBatchUploadProductImages(e.target.files);
+                      e.target.value = '';
                     }}
                     className="hidden"
                   />
                 </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {([0, 1, 2] as const).map((slotIdx) => {
+                  const slotVal = prodForm.images[slotIdx];
+                  const slotLabel =
+                    slotIdx === 0
+                      ? dict.admin.imageSlotMain
+                      : `${dict.admin.imageSlotExtra} ${slotIdx + 1}`;
+                  return (
+                    <div
+                      key={slotIdx}
+                      className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50/70 dark:bg-zinc-900/60 p-2.5 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] font-semibold text-zinc-700 dark:text-zinc-300">
+                          {slotLabel}
+                        </span>
+                        {slotVal.trim() && (
+                          <button
+                            type="button"
+                            onClick={() => updateProdImageSlot(slotIdx, '')}
+                            className="inline-flex items-center gap-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 hover:underline cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>{dict.admin.clearPhoto}</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="aspect-[4/3] w-full overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 flex items-center justify-center">
+                        {slotVal.trim() ? (
+                          <SmartImage
+                            src={slotVal}
+                            alt={slotLabel}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center gap-1 text-zinc-400 dark:text-zinc-600">
+                            <Images className="w-5 h-5" />
+                            <span className="text-[10px]">{slotLabel}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <input
+                        type="text"
+                        value={slotVal}
+                        onChange={(e) => updateProdImageSlot(slotIdx, e.target.value)}
+                        placeholder="https://..."
+                        aria-label={`${slotLabel} URL`}
+                        className="w-full rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11px] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400"
+                      />
+
+                      <label className="w-full inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2.5 py-1.5 text-[11px] font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer">
+                        <Upload className="w-3 h-3" />
+                        <span>{dict.admin.uploadImage}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) {
+                              readFileAsDataUrl(
+                                f,
+                                (res) => updateProdImageSlot(slotIdx, res),
+                                galleryCompression
+                              );
+                            }
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 

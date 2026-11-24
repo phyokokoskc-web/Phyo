@@ -1,4 +1,4 @@
-import { Heart, ShoppingBag, Zap } from 'lucide-react';
+import { Heart, Images, ShoppingBag, Zap } from 'lucide-react';
 import type { Language, Product } from '../types';
 import { formatMMK } from '../utils/format';
 import { t } from '../i18n';
@@ -30,6 +30,9 @@ export function ProductCard({
   const dict = t(lang);
   const title = lang === 'mm' ? product.nameMm : product.name;
   const outOfStock = product.stock <= 0;
+  const photoCount = Array.from(
+    new Set([...(product.images || []), product.image].map((s) => (s || '').trim()).filter(Boolean))
+  ).length;
 
   if (layout === 'list') {
     return (
@@ -61,6 +64,13 @@ export function ProductCard({
           >
             <Heart className={`w-3.5 h-3.5 ${isWishlisted ? 'fill-current' : ''}`} />
           </button>
+
+          {photoCount > 1 && (
+            <div className="pointer-events-none absolute bottom-1.5 right-1.5 inline-flex items-center gap-1 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-mono-tabular font-medium text-white">
+              <Images className="w-2.5 h-2.5" />
+              <span>{photoCount}</span>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-1 flex-col min-w-0 p-3 sm:p-4">
@@ -162,6 +172,13 @@ export function ProductCard({
         >
           <Heart className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${isWishlisted ? 'fill-current' : ''}`} />
         </button>
+
+        {photoCount > 1 && (
+          <div className="pointer-events-none absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-md bg-black/65 px-1.5 py-0.5 text-[10px] sm:text-[11px] font-mono-tabular font-medium text-white">
+            <Images className="w-3 h-3" />
+            <span>{photoCount}</span>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-1 flex-col p-3 sm:p-5">

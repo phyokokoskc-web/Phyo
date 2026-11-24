@@ -66,7 +66,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'sku', 'name', 'nameMm', 'category', 'price', 'compareAtPrice',
-          'stock', 'popular', 'rating', 'soldCount', 'image', 'variants',
+          'stock', 'popular', 'rating', 'soldCount', 'image', 'images', 'variants',
           'description', 'descriptionMm', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -81,6 +81,13 @@ service cloud.firestore {
         && data.rating is number && data.rating >= 0 && data.rating <= 5
         && data.soldCount is number && data.soldCount >= 0
         && data.image is string && data.image.size() <= 800000
+        && (!('images' in data) || (
+          data.images is list
+          && data.images.size() >= 1
+          && data.images.size() <= 5
+          && data.images[0] is string
+          && data.images[0].size() <= 800000
+        ))
         && data.variants is list && data.variants.size() >= 1 && data.variants.size() <= 20
         && data.variants[0] is string && data.variants[0].size() <= 80
         && data.description is string && data.description.size() <= 2000

@@ -96,6 +96,33 @@ export function normalizeProductPayload(prod: Product) {
     Array.isArray(prod.variants) && prod.variants.length > 0
       ? prod.variants.slice(0, 20).map((v) => clampStr(v, 80, 'Standard') || 'Standard')
       : ['Standard'];
+
+  const candidateImages: string[] = [];
+  if (Array.isArray(prod.images)) {
+    for (const entry of prod.images) {
+      const trimmed = (entry || '').trim();
+      if (trimmed && !candidateImages.includes(trimmed)) {
+        candidateImages.push(clampStr(trimmed, 800000, ''));
+      }
+    }
+  }
+  const primaryTrimmed = (prod.image || '').trim();
+  if (primaryTrimmed && !candidateImages.includes(primaryTrimmed)) {
+    candidateImages.unshift(clampStr(primaryTrimmed, 800000, ''));
+  }
+
+  // Enforce cumulative document budget (~820KB across images) to stay well under Firestore 1 MiB limit
+  const boundedImages: string[] = [];
+  let charBudget = 820000;
+  for (const imgStr of candidateImages.slice(0, 5)) {
+    if (boundedImages.length === 0 || imgStr.length <= charBudget) {
+      boundedImages.push(imgStr);
+      charBudget -= imgStr.length;
+    }
+  }
+
+  const coverImage = boundedImages[0] || clampStr(prod.image, 800000, '');
+
   const base: Record<string, unknown> = {
     id: sanitizeId(prod.id),
     sku: clampStr(prod.sku, 64, 'SK-001') || 'SK-001',
@@ -107,7 +134,8 @@ export function normalizeProductPayload(prod: Product) {
     popular: Boolean(prod.popular),
     rating: Math.min(5, Math.max(0, Number(prod.rating) || 4.9)),
     soldCount: Math.max(0, Number(prod.soldCount) || 0),
-    image: clampStr(prod.image, 800000, ''),
+    image: coverImage,
+    ...(boundedImages.length > 0 ? { images: boundedImages } : {}),
     variants,
     description: clampStr(prod.description, 2000, ''),
     descriptionMm: clampStr(prod.descriptionMm, 2000, ''),
@@ -612,6 +640,9 @@ export async function saveProductDoc(
     const payload = normalizeProductPayload(prod);
     if (isEdit && typeof prod.compareAtPrice !== 'number') {
       payload.compareAtPrice = deleteField();
+    }
+    if (isEdit && !payload.images) {
+      payload.images = deleteField();
     }
     const prodRef = doc(db, 'products', sanitizeId(prod.id));
     if (isEdit) {

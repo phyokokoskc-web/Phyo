@@ -1,4 +1,18 @@
-export function readImageFileAsDataUrl(file: File, onLoad: (result: string) => void): void {
+export interface ImageReadOptions {
+  maxDim?: number;
+  quality?: number;
+  maxChars?: number;
+}
+
+export function readImageFileAsDataUrl(
+  file: File,
+  onLoad: (result: string) => void,
+  options?: ImageReadOptions
+): void {
+  const targetMaxDim = options?.maxDim ?? 900;
+  const targetQuality = options?.quality ?? 0.78;
+  const targetMaxChars = options?.maxChars ?? 420000;
+
   const reader = new FileReader();
   reader.onload = () => {
     if (typeof reader.result !== 'string') return;
@@ -23,13 +37,21 @@ export function readImageFileAsDataUrl(file: File, onLoad: (result: string) => v
         return canvas.toDataURL('image/jpeg', quality);
       };
 
-      if (img.width <= 900 && img.height <= 900 && rawUrl.length < 280000) {
+      if (
+        img.width <= targetMaxDim &&
+        img.height <= targetMaxDim &&
+        rawUrl.length <= Math.min(280000, targetMaxChars)
+      ) {
         onLoad(rawUrl);
         return;
       }
-      let compressed = renderAt(900, 0.78);
-      if (compressed.length > 420000) {
-        compressed = renderAt(700, 0.62);
+
+      let compressed = renderAt(targetMaxDim, targetQuality);
+      if (compressed.length > targetMaxChars) {
+        compressed = renderAt(Math.min(targetMaxDim, 680), Math.min(targetQuality, 0.62));
+      }
+      if (compressed.length > targetMaxChars) {
+        compressed = renderAt(Math.min(targetMaxDim, 540), 0.52);
       }
       onLoad(compressed);
     };
