@@ -79,3 +79,20 @@ Custom Domain (သို့) `.pages.dev` မှ Google Sign-In နှင့် 
 - **Buyer Storefront**: `https://your-domain.com/` (Products, Cart, Wishlist, Checkout, Live Chat အလုပ်လုပ်/မလုပ် စစ်ပါ)
 - **Seller / Admin Console**: `https://your-domain.com/seller` (Page Refresh လုပ်ကြည့်ပါ — `_redirects` ကြောင့် 404 မတက်ဘဲ ပုံမှန်ပွင့်ရပါမည်)
 - Admin Email (`phyokoko.ctd@gmail.com`) ဖြင့် Google Sign-In ဝင်ပြီး Products / Brand Logo / Orders များ စစ်ဆေးပါ။
+
+---
+
+## 7. App မဖွင့်ထားလဲ ဖုန်း Notification Bar ပေါ်စေရန် (Cloudflare Background Web Push Setup)
+Seller Console ၏ **Buyer Alerts** မှ စာပို့လိုက်သည့်အခါ ဝယ်သူများ App ကို ပိတ်ထားလျှင်ပင် ဖုန်း Notification Bar တွင် တန်းပေါ်စေရန် Cloudflare Worker တွင် VAPID Key တစ်စုံ ထည့်ပေးရပါမည် (တစ်ကြိမ်သာ ထည့်ရန် လိုအပ်ပါသည်)။
+
+1. မည်သည့် Node.js Terminal (သို့မဟုတ် AI Studio / PC) တွင်မဆို အောက်ပါ Command ဖြင့် VAPID Key တစ်စုံ ထုတ်ယူပါ:
+   ```bash
+   node -e "const c=require('crypto');const {publicKey,privateKey}=c.generateKeyPairSync('ec',{namedCurve:'prime256v1'});const pub=publicKey.export({format:'jwk'});const priv=privateKey.export({format:'jwk'});const b64=s=>Buffer.from(s,'base64url');console.log('VAPID_PUBLIC_KEY=',Buffer.concat([Buffer.from([4]),b64(pub.x),b64(pub.y)]).toString('base64url'));console.log('VAPID_PRIVATE_KEY=',priv.d);"
+   ```
+2. Cloudflare Dashboard → **Workers & Pages** → **`phyo`** Worker → **Settings** → **Variables and Secrets** ကို နှိပ်ပါ။
+3. **+ Add** နှိပ်ပြီး အောက်ပါ (၂) ခုကို ထည့်ပါ:
+   - Variable: `VAPID_PUBLIC_KEY` (Type: Text — ထွက်လာသော Public Key ကို ထည့်ပါ)
+   - Secret: `VAPID_PRIVATE_KEY` (Type: Secret — ထွက်လာသော Private Key ကို ထည့်ပါ)
+   - *(Optional)* Variable: `VAPID_SUBJECT` = `mailto:phyokoko.ctd@gmail.com`
+4. **Deploy / Save** နှိပ်ပါ။ ထို့နောက် Buyer များသည် **Bell (အသိပေးချက်) → ဖုန်း Noti Bar ဖွင့်မည်** ကို နှိပ်ထားရုံဖြင့် App ပိတ်ထားချိန်၌ပင် ဖုန်း Notification Bar တွင် တိုက်ရိုက်ပေါ်ပါမည်။ (iPhone ဖြစ်ပါက Safari **Share → Add to Home Screen** ဖြင့် App ထည့်ပြီးမှ ဖွင့်ပေးရပါမည်)။
+

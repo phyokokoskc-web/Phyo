@@ -294,6 +294,27 @@ service cloud.firestore {
         && data.serverCreatedAt is timestamp;
     }
 
+    function isValidPushSubscription(data) {
+      return data.keys().hasAll([
+          'id', 'buyerUid', 'buyerName', 'endpoint',
+          'p256dh', 'auth', 'userAgent', 'enabled', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'buyerUid', 'buyerName', 'endpoint',
+          'p256dh', 'auth', 'userAgent', 'enabled', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.buyerUid)
+        && data.buyerName is string && data.buyerName.size() <= 120
+        && data.endpoint is string && data.endpoint.size() >= 10 && data.endpoint.size() <= 1000 && data.endpoint.matches('^https://.*')
+        && data.p256dh is string && data.p256dh.size() >= 10 && data.p256dh.size() <= 300
+        && data.auth is string && data.auth.size() >= 10 && data.auth.size() <= 200
+        && data.userAgent is string && data.userAgent.size() <= 240
+        && data.enabled is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // --- Collection Rules ---
     match /test/connection {
       allow get: if true;
@@ -547,6 +568,35 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().serverCreatedAt == existing().serverCreatedAt;
       allow delete: if isAdmin() && isValidId(notifId);
+    }
+
+    match /pushSubscriptions/{subId} {
+      allow get: if isValidId(subId) && (
+        isAdmin() ||
+        (isSignedIn() && existing().buyerUid == request.auth.uid)
+      );
+      allow list: if isAdmin() || (isSignedIn() && resource.data.buyerUid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(subId)
+        && isValidPushSubscription(incoming())
+        && incoming().id == subId
+        && incoming().buyerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(subId)
+        && isValidPushSubscription(incoming())
+        && incoming().id == existing().id
+        && incoming().buyerUid == existing().buyerUid
+        && incoming().buyerUid == request.auth.uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() || (
+        isVerifiedUser()
+        && isValidId(subId)
+        && resource != null
+        && existing().buyerUid == request.auth.uid
+      );
     }
   }
 }

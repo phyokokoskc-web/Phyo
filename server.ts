@@ -4,6 +4,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
+import {
+  generateVapidKeyPair,
+  sendWebPushMessage,
+  verifyFirebaseAdminToken,
+  type PushNotificationPayload,
+  type PushSubscriptionInput,
+  type VapidConfig,
+} from './shared/webPush.ts';
 import type {
   Address,
   BannerSlide,
@@ -25,6 +33,9 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(__dirname, 'data');
 const STORE_FILE = path.join(DATA_DIR, 'store.json');
+const VAPID_FILE = path.join(DATA_DIR, 'vapid.json');
+const FIREBASE_CONFIG_FILE = path.resolve(__dirname, 'firebase-applet-config.json');
+const ADMIN_EMAIL = 'phyokoko.ctd@gmail.com';
 
 interface StoreData {
   products: Product[];
@@ -1420,6 +1431,140 @@ app.delete('/api/categories/:name', (req, res) => {
   };
   broadcast({ type: 'categories:updated', payload });
   res.json(payload);
+});
+
+let cachedVapidConfig: VapidConfig | null = null;
+
+async function getServerVapidConfig(): Promise<VapidConfig> {
+  if (cachedVapidConfig) return cachedVapidConfig;
+
+  const envPub = (process.env.VAPID_PUBLIC_KEY || '').trim();
+  const envPriv = (process.env.VAPID_PRIVATE_KEY || '').trim();
+  const subject = (process.env.VAPID_SUBJECT || `mailto:${ADMIN_EMAIL}`).trim();
+
+  if (envPub && envPriv) {
+    cachedVapidConfig = { publicKey: envPub, privateKey: envPriv, subject };
+    return cachedVapidConfig;
+  }
+
+  try {
+    if (fs.existsSync(VAPID_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(VAPID_FILE, 'utf-8')) as Partial<VapidConfig>;
+      if (saved.publicKey && saved.privateKey) {
+        cachedVapidConfig = {
+          publicKey: saved.publicKey,
+          privateKey: saved.privateKey,
+          subject: saved.subject || subject,
+        };
+        return cachedVapidConfig;
+      }
+    }
+  } catch {
+    // Regenerate if corrupt
+  }
+
+  const generated = await generateVapidKeyPair();
+  cachedVapidConfig = {
+    publicKey: generated.publicKey,
+    privateKey: generated.privateKey,
+    subject,
+  };
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(VAPID_FILE, JSON.stringify(cachedVapidConfig, null, 2), 'utf-8');
+  } catch {
+    // Non-fatal in read-only containers
+  }
+  return cachedVapidConfig;
+}
+
+function getFirebaseProjectId(): string {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_FILE, 'utf-8')) as {
+      projectId?: string;
+    };
+    return parsed.projectId || 'sapient-buckeye-gm4ph';
+  } catch {
+    return 'sapient-buckeye-gm4ph';
+  }
+}
+
+app.get('/api/push/public-key', async (_req, res) => {
+  try {
+    const vapid = await getServerVapidConfig();
+    res.json({
+      configured: true,
+      publicKey: vapid.publicKey,
+    });
+  } catch {
+    res.json({ configured: false, publicKey: null });
+  }
+});
+
+app.post('/api/push/send', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!idToken) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const projectId = getFirebaseProjectId();
+  const verifiedAdmin = await verifyFirebaseAdminToken(idToken, projectId, ADMIN_EMAIL);
+  if (!verifiedAdmin) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+
+  const body = (req.body || {}) as {
+    subscriptions?: PushSubscriptionInput[];
+    payload?: PushNotificationPayload;
+  };
+  const subs = Array.isArray(body.subscriptions) ? body.subscriptions.slice(0, 200) : [];
+  const rawPayload = body.payload;
+  if (!rawPayload?.title || !rawPayload?.body) {
+    res.status(400).json({ error: 'Notification title and body are required' });
+    return;
+  }
+
+  const vapid = await getServerVapidConfig();
+  const cleanPayload: PushNotificationPayload = {
+    title: String(rawPayload.title).slice(0, 140),
+    body: String(rawPayload.body).slice(0, 600),
+    icon: '/pwa-192x192.png',
+    badge: '/pwa-192x192.png',
+    tag: rawPayload.tag ? String(rawPayload.tag).slice(0, 120) : `shoptopia-${Date.now()}`,
+    actionTarget: rawPayload.actionTarget ? String(rawPayload.actionTarget).slice(0, 120) : 'none',
+    notifId: rawPayload.notifId ? String(rawPayload.notifId).slice(0, 128) : '',
+    url: rawPayload.url ? String(rawPayload.url).slice(0, 240) : '/',
+  };
+
+  const validSubs = subs.filter(
+    (s) =>
+      s &&
+      typeof s.id === 'string' &&
+      typeof s.endpoint === 'string' &&
+      s.endpoint.startsWith('https://') &&
+      typeof s.p256dh === 'string' &&
+      typeof s.auth === 'string'
+  );
+
+  const results = await Promise.all(
+    validSubs.map(async (sub) => {
+      const r = await sendWebPushMessage(sub, cleanPayload, vapid);
+      return { id: sub.id, ...r };
+    })
+  );
+
+  res.json({
+    ok: true,
+    configured: true,
+    sent: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    expiredIds: results.filter((r) => r.expired).map((r) => r.id),
+  });
 });
 
 // Vite Middleware in Development / Static Build in Production

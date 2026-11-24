@@ -1,13 +1,36 @@
-import { Bell, CheckCheck, Info, PackageCheck, Sparkles, Tag, X } from 'lucide-react';
+import {
+  Bell,
+  BellOff,
+  BellRing,
+  CheckCheck,
+  Info,
+  Loader2,
+  LogIn,
+  PackageCheck,
+  Smartphone,
+  Sparkles,
+  Tag,
+  X,
+} from 'lucide-react';
 import type { Language, NotificationType, StoreNotification } from '../types';
 import { t } from '../i18n';
 import { formatDateTime } from '../utils/format';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface BuyerNotificationsDrawerProps {
   open: boolean;
   lang: Language;
   notifications: StoreNotification[];
   readIds: string[];
+  isAuthenticated?: boolean;
+  pushSupported?: boolean;
+  pushPermission?: NotificationPermission | 'unsupported';
+  pushSubscribed?: boolean;
+  pushEnabling?: boolean;
+  iosNeedsHomeScreen?: boolean;
+  onEnablePush?: () => void;
+  onDisablePush?: () => void;
+  onOpenSignIn?: () => void;
   onClose: () => void;
   onMarkRead: (id: string) => void;
   onMarkAllRead: () => void;
@@ -41,6 +64,15 @@ export function BuyerNotificationsDrawer({
   lang,
   notifications,
   readIds,
+  isAuthenticated = false,
+  pushSupported = true,
+  pushPermission = 'default',
+  pushSubscribed = false,
+  pushEnabling = false,
+  iosNeedsHomeScreen = false,
+  onEnablePush,
+  onDisablePush,
+  onOpenSignIn,
   onClose,
   onMarkRead,
   onMarkAllRead,
@@ -50,6 +82,8 @@ export function BuyerNotificationsDrawer({
   const dict = t(lang);
   const readSet = new Set(readIds);
   const unreadCount = notifications.filter((n) => !readSet.has(n.id)).length;
+  const pushActive = pushPermission === 'granted' && pushSubscribed;
+  const pushBlocked = pushPermission === 'denied';
 
   return (
     <div
@@ -100,6 +134,102 @@ export function BuyerNotificationsDrawer({
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+          {/* OS Notification Bar Opt-In / Status Card */}
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/50 p-3.5 space-y-2.5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <div
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                    pushActive
+                      ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400'
+                      : pushBlocked
+                      ? 'bg-red-100 dark:bg-red-950/50 text-red-600 dark:text-red-400'
+                      : 'bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400'
+                  }`}
+                >
+                  {pushBlocked ? (
+                    <BellOff className="w-4 h-4" />
+                  ) : pushActive ? (
+                    <BellRing className="w-4 h-4" />
+                  ) : (
+                    <Smartphone className="w-4 h-4" />
+                  )}
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                      {dict.notifications.pushBoxTitle}
+                    </p>
+                    {pushActive && (
+                      <span className="rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                        {dict.notifications.pushActiveBadge}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-zinc-600 dark:text-zinc-300 leading-relaxed">
+                    {iosNeedsHomeScreen
+                      ? dict.notifications.pushBoxDescIOS
+                      : pushBlocked
+                      ? dict.notifications.pushBoxDescBlocked
+                      : pushActive
+                      ? dict.notifications.pushBoxDescActive
+                      : dict.notifications.pushBoxDescPrompt}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {!isAuthenticated && !iosNeedsHomeScreen && !pushBlocked && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-950/40 px-2.5 py-2 text-[11px] text-zinc-600 dark:text-zinc-300">
+                <span className="leading-snug">{dict.notifications.pushSignInHint}</span>
+                {onOpenSignIn && (
+                  <button
+                    type="button"
+                    onClick={onOpenSignIn}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-zinc-200 dark:border-zinc-700 px-2 py-1 text-[11px] font-semibold text-zinc-800 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+                  >
+                    <LogIn className="w-3 h-3" />
+                    <span>{dict.auth.signInOrUp}</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!iosNeedsHomeScreen && !pushBlocked && pushSupported && !pushActive && onEnablePush && (
+                <button
+                  type="button"
+                  disabled={pushEnabling}
+                  onClick={onEnablePush}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-3 py-1.5 text-[11px] font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 cursor-pointer"
+                >
+                  {pushEnabling ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <BellRing className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {pushEnabling ? dict.notifications.pushEnablingBtn : dict.notifications.pushEnableBtn}
+                  </span>
+                </button>
+              )}
+
+              {pushActive && onDisablePush && (
+                <button
+                  type="button"
+                  disabled={pushEnabling}
+                  onClick={onDisablePush}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
+                >
+                  <BellOff className="w-3.5 h-3.5" />
+                  <span>{dict.notifications.pushDisableBtn}</span>
+                </button>
+              )}
+
+              <PWAInstallButton lang={lang} compact />
+            </div>
+          </div>
+
           {notifications.length === 0 ? (
             <div className="py-16 px-4 text-center space-y-2">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-400">

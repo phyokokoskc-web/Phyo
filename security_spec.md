@@ -21,3 +21,5 @@
 11. **Backdated Timestamp Forgery**: Client sends client timestamp instead of `serverTimestamp()` -> `PERMISSION_DENIED` (`== request.time` fails).
 12. **Resource Poisoning / Oversized String**: Admin or buyer attempts to write a 1.5MB string into `name` or `id` -> `PERMISSION_DENIED` (`.size()` / `isValidId()` fails).
 13. **Non-Admin Notification Forgery & Targeted Read Isolation**: Verified buyer attempts `create` on `/notifications/notif-evil` or Buyer B attempts `get`/`list` on a notification where `targetBuyerId == 'buyer-a'` -> `PERMISSION_DENIED`.
+14. **Cross-User Push Subscription Hijacking / Scraping**: Buyer B attempts `create` on `/pushSubscriptions/sub-1` with `buyerUid: 'buyer-a'`, or attempts `get`/`list` of another buyer's push endpoint -> `PERMISSION_DENIED`.
+

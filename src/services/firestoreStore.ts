@@ -6,10 +6,12 @@ import {
   getDoc,
   getDocs,
   increment,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
@@ -24,6 +26,7 @@ import type {
   PaymentMethod,
   PaymentSettings,
   Product,
+  PushSubscriptionRecord,
   StoreBrandConfig,
   UserProfile,
 } from '../types';
@@ -1099,5 +1102,155 @@ export async function deleteNotificationDoc(notifId: string): Promise<void> {
     await deleteDoc(doc(db, 'notifications', cleanId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+export async function buildPushSubscriptionId(uid: string, endpoint: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${uid}:${endpoint}`);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  const hex = Array.from(digest)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `sub-${hex.slice(0, 40)}`;
+}
+
+export async function upsertPushSubscriptionDoc(input: {
+  uid: string;
+  buyerName: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string;
+}): Promise<string> {
+  const cleanUid = sanitizeId(input.uid);
+  const subId = await buildPushSubscriptionId(cleanUid, input.endpoint);
+  const path = `pushSubscriptions/${subId}`;
+  try {
+    const ref = doc(db, 'pushSubscriptions', subId);
+    const snap = await getDoc(ref);
+    const baseData = {
+      id: subId,
+      buyerUid: cleanUid,
+      buyerName: clampStr(input.buyerName.trim() || 'Buyer', 120, 'Buyer'),
+      endpoint: clampStr(input.endpoint.trim(), 1000),
+      p256dh: clampStr(input.p256dh.trim(), 300),
+      auth: clampStr(input.auth.trim(), 200),
+      userAgent: clampStr(input.userAgent.trim() || 'Browser', 240, 'Browser'),
+      enabled: true,
+      updatedAt: serverTimestamp(),
+    };
+    if (snap.exists()) {
+      await updateDoc(ref, baseData);
+    } else {
+      await setDoc(ref, {
+        ...baseData,
+        createdAt: serverTimestamp(),
+      });
+    }
+    return subId;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function removePushSubscriptionDoc(uid: string, endpoint: string): Promise<void> {
+  const cleanUid = sanitizeId(uid);
+  const subId = await buildPushSubscriptionId(cleanUid, endpoint);
+  const path = `pushSubscriptions/${subId}`;
+  try {
+    await deleteDoc(doc(db, 'pushSubscriptions', subId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+export async function fetchPushSubscriptionsForTarget(
+  targetBuyerId: string
+): Promise<PushSubscriptionRecord[]> {
+  try {
+    const q =
+      targetBuyerId === 'all'
+        ? query(collection(db, 'pushSubscriptions'), where('enabled', '==', true))
+        : query(collection(db, 'pushSubscriptions'), where('buyerUid', '==', sanitizeId(targetBuyerId)));
+    const snap = await getDocs(q);
+    const list: PushSubscriptionRecord[] = [];
+    snap.forEach((docSnap) => {
+      const d = docSnap.data() as PushSubscriptionRecord;
+      if (d && d.enabled !== false && d.endpoint && d.p256dh && d.auth) {
+        list.push(d);
+      }
+    });
+    return list;
+  } catch (err) {
+    console.error('Failed to read pushSubscriptions:', err);
+    return [];
+  }
+}
+
+export async function dispatchBackgroundWebPush(input: {
+  idToken: string;
+  targetBuyerId: string;
+  notifId: string;
+  title: string;
+  message: string;
+  actionTarget?: string;
+}): Promise<{ configured: boolean; sent: number; failed: number; totalTargets: number }> {
+  const subs = await fetchPushSubscriptionsForTarget(input.targetBuyerId);
+  if (subs.length === 0) {
+    return { configured: true, sent: 0, failed: 0, totalTargets: 0 };
+  }
+
+  try {
+    const res = await fetch('/api/push/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${input.idToken}`,
+      },
+      body: JSON.stringify({
+        subscriptions: subs.slice(0, 200).map((s) => ({
+          id: s.id,
+          endpoint: s.endpoint,
+          p256dh: s.p256dh,
+          auth: s.auth,
+        })),
+        payload: {
+          title: input.title,
+          body: input.message,
+          tag: `shoptopia-notif-${input.notifId}`,
+          actionTarget: input.actionTarget || 'none',
+          notifId: input.notifId,
+          url: '/',
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      return { configured: false, sent: 0, failed: subs.length, totalTargets: subs.length };
+    }
+
+    const data = (await res.json()) as {
+      configured?: boolean;
+      sent?: number;
+      failed?: number;
+      expiredIds?: string[];
+    };
+
+    if (Array.isArray(data.expiredIds) && data.expiredIds.length > 0) {
+      const batch = writeBatch(db);
+      for (const expiredId of data.expiredIds.slice(0, 100)) {
+        batch.delete(doc(db, 'pushSubscriptions', sanitizeId(expiredId)));
+      }
+      await batch.commit().catch(() => undefined);
+    }
+
+    return {
+      configured: Boolean(data.configured),
+      sent: Number(data.sent) || 0,
+      failed: Number(data.failed) || 0,
+      totalTargets: subs.length,
+    };
+  } catch {
+    return { configured: false, sent: 0, failed: subs.length, totalTargets: subs.length };
   }
 }

@@ -169,6 +169,17 @@ export interface StoreNotification {
   createdAt: string;
 }
 
+export interface PushSubscriptionRecord {
+  id: string;
+  buyerUid: string;
+  buyerName: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string;
+  enabled: boolean;
+}
+
 export interface BootstrapPayload {
   products: Product[];
   categories: string[];

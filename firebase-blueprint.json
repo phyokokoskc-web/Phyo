@@ -181,6 +181,24 @@
         "serverCreatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "targetBuyerId", "targetBuyerName", "type", "title", "message", "senderName", "createdAt", "serverCreatedAt"]
+    },
+    "PushSubscription": {
+      "title": "PushSubscription",
+      "description": "Web Push browser subscription registered by a verified buyer for background OS notification bar delivery.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerName": { "type": "string", "maxLength": 120 },
+        "endpoint": { "type": "string", "minLength": 10, "maxLength": 1000 },
+        "p256dh": { "type": "string", "minLength": 10, "maxLength": 300 },
+        "auth": { "type": "string", "minLength": 10, "maxLength": 200 },
+        "userAgent": { "type": "string", "maxLength": 240 },
+        "enabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "buyerUid", "buyerName", "endpoint", "p256dh", "auth", "userAgent", "enabled", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -223,6 +241,10 @@
     "/notifications/{notifId}": {
       "schema": { "$ref": "#/entities/StoreNotification" },
       "description": "Real-time seller notifications (broadcast 'all' or targeted to a specific buyer UID); writable only by admin."
+    },
+    "/pushSubscriptions/{subId}": {
+      "schema": { "$ref": "#/entities/PushSubscription" },
+      "description": "Private buyer Web Push device subscriptions; readable/deletable by owner or admin."
     }
   }
 }

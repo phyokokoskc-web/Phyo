@@ -48,10 +48,22 @@ import {
   deleteChatMessageDoc,
   ensureBuyerProfileDoc,
   markThreadMessagesRead,
+  removePushSubscriptionDoc,
   sendChatMessageDoc,
   syncLocalSeedToFirestoreIfEmpty,
   toggleWishlistDoc,
+  upsertPushSubscriptionDoc,
 } from './services/firestoreStore';
+import {
+  fetchPushPublicKey,
+  getCurrentBrowserPushEndpoint,
+  getNotificationPermissionState,
+  isIOSNeedsHomeScreen,
+  isServiceWorkerPushSupported,
+  showOsNotificationBarAlert,
+  subscribeBrowserToWebPush,
+  unsubscribeBrowserFromWebPush,
+} from './services/pushNotifications';
 import { BannerSlider } from './components/BannerSlider';
 import { StoreLogoBanner } from './components/StoreLogoBanner';
 import { ProductCard, type ProductLayoutMode } from './components/ProductCard';
@@ -63,6 +75,8 @@ import { WishlistView } from './components/WishlistView';
 import { LiveChatWidget } from './components/LiveChatWidget';
 import { AdminDashboard } from './components/AdminDashboard';
 import { BuyerAuthPanel } from './components/BuyerAuthPanel';
+import { PWAInstallButton } from './components/PWAInstallButton';
+import { OfflineIndicator } from './components/OfflineIndicator';
 import {
   BuyerNotificationsDrawer,
   LiveNotificationBanner,
@@ -248,6 +262,17 @@ export default function App() {
   const knownNotifIdsRef = useRef<Set<string>>(new Set());
   const broadcastInitDoneRef = useRef(false);
   const targetedInitDoneRef = useRef(false);
+
+  // Web Push (Closed-App Phone Notification Bar) State
+  const [pushVapidPublicKey, setPushVapidPublicKey] = useState<string | null>(null);
+  const [pushPermission, setPushPermission] = useState<NotificationPermission | 'unsupported'>(() =>
+    getNotificationPermissionState()
+  );
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushEnabling, setPushEnabling] = useState(false);
+  const [pendingPushEnable, setPendingPushEnable] = useState(false);
+  const pushSupported = isServiceWorkerPushSupported();
+  const iosNeedsHomeScreen = isIOSNeedsHomeScreen();
 
   const catalogRef = useRef<HTMLElement | null>(null);
   const dict = t(lang);
@@ -452,6 +477,7 @@ export default function App() {
           for (const n of list) knownNotifIdsRef.current.add(n.id);
           if (fresh && window.location.pathname !== '/seller' && window.location.pathname !== '/admin') {
             setLiveIncomingNotif(fresh);
+            void showOsNotificationBarAlert(fresh);
           }
         }
       },
@@ -651,8 +677,9 @@ export default function App() {
           } else {
             const fresh = list.find((n) => !knownNotifIdsRef.current.has(n.id));
             for (const n of list) knownNotifIdsRef.current.add(n.id);
-            if (fresh) {
+            if (fresh && window.location.pathname !== '/seller' && window.location.pathname !== '/admin') {
               setLiveIncomingNotif(fresh);
+              void showOsNotificationBarAlert(fresh);
             }
           }
         },
@@ -725,6 +752,148 @@ export default function App() {
     setReadNotifIds(allIds);
     safeSetStorage(`yg_read_notifs_${buyerId}`, JSON.stringify(allIds));
   }, [buyerNotifications, readNotifIds, buyerId]);
+
+  // Web Push Key & Subscription Status Sync
+  useEffect(() => {
+    let active = true;
+    void fetchPushPublicKey().then((res) => {
+      if (active && res.configured && res.publicKey) {
+        setPushVapidPublicKey(res.publicKey);
+      }
+    });
+    void getCurrentBrowserPushEndpoint().then((endpoint) => {
+      if (active) {
+        setPushSubscribed(Boolean(endpoint));
+        setPushPermission(getNotificationPermissionState());
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const syncDevicePushSubscription = useCallback(
+    async (user: User, vapidKey: string) => {
+      const keys = await subscribeBrowserToWebPush(vapidKey);
+      if (!keys) return false;
+      const buyerDisplay =
+        user.displayName || user.phoneNumber || user.email?.split('@')[0] || 'Buyer';
+      await upsertPushSubscriptionDoc({
+        uid: user.uid,
+        buyerName: buyerDisplay,
+        endpoint: keys.endpoint,
+        p256dh: keys.p256dh,
+        auth: keys.auth,
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Browser',
+      });
+      setPushSubscribed(true);
+      return true;
+    },
+    []
+  );
+
+  // Sync existing or pending Web Push subscription once signed in
+  useEffect(() => {
+    if (!authUser || !pushVapidPublicKey) return;
+    if (pendingPushEnable && Notification.permission === 'granted') {
+      setPendingPushEnable(false);
+      setPushEnabling(true);
+      void syncDevicePushSubscription(authUser, pushVapidPublicKey)
+        .then((ok) => {
+          if (ok) {
+            showToast(
+              lang === 'mm'
+                ? 'ဖုန်း Notification Bar ဖွင့်ပြီးပါပြီ!'
+                : 'Phone notification bar alerts enabled!'
+            );
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => setPushEnabling(false));
+      return;
+    }
+
+    if (Notification.permission === 'granted') {
+      void getCurrentBrowserPushEndpoint().then((endpoint) => {
+        if (endpoint) {
+          void syncDevicePushSubscription(authUser, pushVapidPublicKey).catch(() => undefined);
+        }
+      });
+    }
+  }, [authUser, pushVapidPublicKey, pendingPushEnable, syncDevicePushSubscription, showToast, lang]);
+
+  const handleEnablePhonePush = useCallback(async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    setPushEnabling(true);
+    try {
+      let perm: NotificationPermission = Notification.permission;
+      if (perm === 'default') {
+        perm = await Notification.requestPermission();
+      }
+      setPushPermission(perm);
+      if (perm !== 'granted') {
+        return;
+      }
+
+      if (!authUser) {
+        setPendingPushEnable(true);
+        setNotificationsOpen(false);
+        setAuthModalOpen(true);
+        return;
+      }
+
+      let vapidKey = pushVapidPublicKey;
+      if (!vapidKey) {
+        const res = await fetchPushPublicKey();
+        if (res.configured && res.publicKey) {
+          vapidKey = res.publicKey;
+          setPushVapidPublicKey(res.publicKey);
+        }
+      }
+
+      if (vapidKey && isServiceWorkerPushSupported()) {
+        const ok = await syncDevicePushSubscription(authUser, vapidKey);
+        if (ok) {
+          showToast(
+            lang === 'mm'
+              ? 'ဖုန်း Notification Bar ဖွင့်ပြီးပါပြီ!'
+              : 'Phone notification bar alerts enabled!'
+          );
+          return;
+        }
+      }
+
+      showToast(
+        lang === 'mm'
+          ? 'Browser Notification Bar ခွင့်ပြုပြီးပါပြီ'
+          : 'Browser notification bar alerts allowed!'
+      );
+    } catch {
+      showToast(
+        lang === 'mm'
+          ? 'ဖုန်း Notification Bar ဖွင့်မရပါ'
+          : 'Could not enable phone notifications'
+      );
+    } finally {
+      setPushEnabling(false);
+    }
+  }, [authUser, pushVapidPublicKey, syncDevicePushSubscription, showToast, lang]);
+
+  const handleDisablePhonePush = useCallback(async () => {
+    setPushEnabling(true);
+    try {
+      const removedEndpoint = await unsubscribeBrowserFromWebPush();
+      if (removedEndpoint && authUser) {
+        await removePushSubscriptionDoc(authUser.uid, removedEndpoint).catch(() => undefined);
+      }
+      setPushSubscribed(false);
+      showToast(
+        lang === 'mm' ? 'ဖုန်း Noti Bar ပိတ်လိုက်ပါပြီ' : 'Phone notification bar alerts turned off'
+      );
+    } finally {
+      setPushEnabling(false);
+    }
+  }, [authUser, showToast, lang]);
 
   // Active Chat Thread Messages Listener (Only attached when thread doc exists in Firestore)
   const activeListenThreadId = useMemo(() => {
@@ -1063,13 +1232,53 @@ export default function App() {
   const myOrders = authUser ? orders.filter((o) => o.buyerId === authUser.uid) : [];
   const loading = !productsLoaded && !fallbackSeed;
 
-  const jumpToCategory = (cat: string) => {
+  const jumpToCategory = useCallback((cat: string) => {
     navigate('shop');
     setSelectedCategory(cat);
     window.setTimeout(() => {
       catalogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 60);
-  };
+  }, [navigate]);
+
+  // Deep-link handling from OS Notification Bar clicks (?openChat=1, ?category=..., or SW postMessage)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shouldOpenChat = params.get('openChat') === '1';
+    const targetCategory = params.get('category');
+    if (shouldOpenChat || targetCategory) {
+      if (shouldOpenChat) {
+        setChatOpen(true);
+      } else if (targetCategory) {
+        jumpToCategory(targetCategory);
+      }
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    if (!('serviceWorker' in navigator)) return;
+    const onSwMessage = (event: MessageEvent) => {
+      const payload = event.data as {
+        type?: string;
+        actionTarget?: string;
+        notifId?: string;
+      } | null;
+      if (!payload || payload.type !== 'NOTIFICATION_CLICKED') return;
+      if (payload.notifId) markNotificationRead(payload.notifId);
+      const target = payload.actionTarget || 'none';
+      if (target === 'orders') {
+        navigate('orders');
+      } else if (target === 'chat') {
+        setChatOpen(true);
+      } else if (target === 'shop') {
+        navigate('shop');
+      } else if (target.startsWith('category:')) {
+        jumpToCategory(target.slice('category:'.length));
+      } else {
+        setNotificationsOpen(true);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onSwMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onSwMessage);
+  }, [jumpToCategory, markNotificationRead, navigate]);
 
   const handleUtilitySignIn = () => {
     setAuthUiError('');
@@ -1221,6 +1430,8 @@ export default function App() {
                     </span>
                   )}
                 </button>
+
+                <PWAInstallButton lang={lang} compact />
 
                 <button
                   type="button"
@@ -1863,6 +2074,18 @@ export default function App() {
             lang={lang}
             notifications={buyerNotifications}
             readIds={readNotifIds}
+            isAuthenticated={isAuthenticated}
+            pushSupported={pushSupported}
+            pushPermission={pushPermission}
+            pushSubscribed={pushSubscribed}
+            pushEnabling={pushEnabling}
+            iosNeedsHomeScreen={iosNeedsHomeScreen}
+            onEnablePush={() => void handleEnablePhonePush()}
+            onDisablePush={() => void handleDisablePhonePush()}
+            onOpenSignIn={() => {
+              setNotificationsOpen(false);
+              setAuthModalOpen(true);
+            }}
             onClose={() => setNotificationsOpen(false)}
             onMarkRead={markNotificationRead}
             onMarkAllRead={markAllNotificationsRead}
@@ -1903,6 +2126,8 @@ export default function App() {
           />
         </>
       )}
+
+      <OfflineIndicator lang={lang} />
 
       {/* Brief Non-Intrusive Feedback Toast */}
       {toast && (

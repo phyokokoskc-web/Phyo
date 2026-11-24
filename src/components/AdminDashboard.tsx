@@ -31,7 +31,10 @@ import {
   ImagePlus,
   Loader2,
   Bell,
+  BellRing,
+  Smartphone,
 } from 'lucide-react';
+import { collection, onSnapshot } from 'firebase/firestore';
 import type {
   BankAccount,
   BannerSlide,
@@ -45,16 +48,19 @@ import type {
   StoreBrandConfig,
   StoreNotification,
 } from '../types';
+import { auth, db } from '../firebase';
 import { formatDateTime, formatMMK, formatShortDate } from '../utils/format';
 import { readImageFileAsDataUrl } from '../utils/image';
 import { t } from '../i18n';
 import { SmartImage } from './SmartImage';
 import { StoreLogoBanner } from './StoreLogoBanner';
+import { fetchPushPublicKey } from '../services/pushNotifications';
 import {
   deleteBannerDoc,
   deleteCategoryBatch,
   deleteNotificationDoc,
   deleteProductDoc,
+  dispatchBackgroundWebPush,
   quickPatchProductDoc,
   renameCategoryBatch,
   resetAnalyticsBatch,
@@ -269,6 +275,40 @@ export function AdminDashboard({
   const [notifError, setNotifError] = useState('');
   const [confirmDeleteNotifId, setConfirmDeleteNotifId] = useState<string | null>(null);
   const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
+  const [pushServerConfigured, setPushServerConfigured] = useState<boolean | null>(null);
+  const [subscribedDeviceCount, setSubscribedDeviceCount] = useState<number>(0);
+  const [lastPushResult, setLastPushResult] = useState<{
+    configured: boolean;
+    sent: number;
+    totalTargets: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (tab !== 'notifications') return;
+    let active = true;
+    void fetchPushPublicKey().then((res) => {
+      if (active) setPushServerConfigured(res.configured);
+    });
+    const unsub = onSnapshot(
+      collection(db, 'pushSubscriptions'),
+      (snap) => {
+        if (!active) return;
+        let count = 0;
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as { enabled?: boolean; endpoint?: string };
+          if (data && data.enabled !== false && data.endpoint) count += 1;
+        });
+        setSubscribedDeviceCount(count);
+      },
+      () => {
+        // Ignore transient permission errors
+      }
+    );
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [tab]);
 
   const knownBuyers = useMemo(() => {
     const map = new Map<string, { id: string; name: string; phone: string }>();
@@ -314,27 +354,50 @@ export function AdminDashboard({
     setSendingNotif(true);
     setNotifError('');
     setNotifSuccess(false);
+    setLastPushResult(null);
+    const cleanTitle = notifTitle.trim();
+    const cleanMsg = notifMessage.trim();
+    const targetId = notifTargetId;
+    const actionTarget = notifActionTarget;
     try {
       const targetBuyer =
-        notifTargetId === 'all'
+        targetId === 'all'
           ? null
-          : knownBuyers.find((b) => b.id === notifTargetId) || null;
-      await sendNotificationDoc({
-        targetBuyerId: notifTargetId,
+          : knownBuyers.find((b) => b.id === targetId) || null;
+      const notifId = await sendNotificationDoc({
+        targetBuyerId: targetId,
         targetBuyerName:
-          notifTargetId === 'all'
+          targetId === 'all'
             ? dict.notifications.broadcastTag
             : targetBuyer?.name || 'Buyer',
         type: notifType,
-        title: notifTitle,
-        message: notifMessage,
-        actionTarget: notifActionTarget,
+        title: cleanTitle,
+        message: cleanMsg,
+        actionTarget,
         senderName: brand.storeName || dict.brand,
       });
+
+      const idToken = await auth.currentUser?.getIdToken().catch(() => '');
+      if (idToken) {
+        const pushRes = await dispatchBackgroundWebPush({
+          idToken,
+          targetBuyerId: targetId,
+          notifId,
+          title: cleanTitle,
+          message: cleanMsg,
+          actionTarget,
+        });
+        setLastPushResult({
+          configured: pushRes.configured,
+          sent: pushRes.sent,
+          totalTargets: pushRes.totalTargets,
+        });
+      }
+
       setNotifTitle('');
       setNotifMessage('');
       setNotifSuccess(true);
-      window.setTimeout(() => setNotifSuccess(false), 3000);
+      window.setTimeout(() => setNotifSuccess(false), 4500);
     } catch {
       setNotifError(dict.notifications.sendError);
     } finally {
@@ -2700,6 +2763,34 @@ export function AdminDashboard({
                 </p>
               </div>
 
+              {/* Background Phone Notification Bar Readiness Box */}
+              <div
+                className={`rounded-lg border px-3.5 py-2.5 text-[11px] space-y-1 ${
+                  pushServerConfigured
+                    ? 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/20 text-emerald-800 dark:text-emerald-300'
+                    : 'border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 font-semibold">
+                  <span className="inline-flex items-center gap-1.5">
+                    {pushServerConfigured ? (
+                      <BellRing className="w-3.5 h-3.5 shrink-0" />
+                    ) : (
+                      <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span>{dict.notifications.pushSellerDevicesLabel}:</span>
+                  </span>
+                  <span className="font-mono-tabular text-xs font-bold">
+                    {subscribedDeviceCount}
+                  </span>
+                </div>
+                <p className="leading-relaxed opacity-90">
+                  {pushServerConfigured === false
+                    ? dict.notifications.pushSellerOpenTabOnlyNote
+                    : dict.notifications.pushSellerReadyNote}
+                </p>
+              </div>
+
               {/* Quick Presets */}
               <div className="space-y-1.5">
                 <span className="block text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
@@ -2848,10 +2939,17 @@ export function AdminDashboard({
                 </p>
               )}
               {notifSuccess && (
-                <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5" />
-                  <span>{dict.notifications.sentSuccess}</span>
-                </p>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{dict.notifications.sentSuccess}</span>
+                  </p>
+                  {lastPushResult && lastPushResult.totalTargets > 0 && (
+                    <p className="text-[11px] font-mono-tabular text-zinc-600 dark:text-zinc-300 pl-5">
+                      {dict.notifications.pushDeliveredCount} {lastPushResult.sent} / {lastPushResult.totalTargets}
+                    </p>
+                  )}
+                </div>
               )}
 
               <button

@@ -109,4 +109,19 @@ export const DIRTY_DOZEN_CASES = [
     operation: 'get',
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: '15. Buyer B registering push subscription under Buyer A uid',
+    path: 'pushSubscriptions/sub-hijack',
+    auth: { uid: 'buyer-b', email_verified: true, email: 'buyerb@gmail.com' },
+    operation: 'create',
+    payload: { id: 'sub-hijack', buyerUid: 'buyer-a', endpoint: 'https://fcm.googleapis.com/fcm/send/abc' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '16. Unfiltered list scraping on /pushSubscriptions by non-admin buyer',
+    path: 'pushSubscriptions',
+    auth: { uid: 'buyer-b', email_verified: true, email: 'buyerb@gmail.com' },
+    operation: 'list',
+    expected: 'PERMISSION_DENIED',
+  },
 ] as const;
