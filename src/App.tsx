@@ -1628,7 +1628,6 @@ export default function App() {
             isAuthenticated={isAuthenticated}
             authEmail={authUser?.email}
             authName={authUser?.displayName}
-            authPhone={authUser?.phoneNumber}
             buyerId={buyerId}
             profile={profile}
             addresses={addresses}
@@ -2018,7 +2017,7 @@ export default function App() {
         </button>
       )}
 
-      {/* Buyer Sign-In / Sign-Up Modal (Phone SMS + Google) */}
+      {/* Buyer Sign-In / Sign-Up Modal (Gmail / Google only) */}
       {authModalOpen && !isAuthenticated && view !== 'admin' && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"

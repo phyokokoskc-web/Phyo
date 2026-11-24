@@ -26,7 +26,6 @@ interface ProfileViewProps {
   isAuthenticated: boolean;
   authEmail?: string | null;
   authName?: string | null;
-  authPhone?: string | null;
   buyerId: string;
   profile: UserProfile;
   addresses: Address[];
@@ -57,7 +56,6 @@ export function ProfileView({
   isAuthenticated,
   authEmail,
   authName,
-  authPhone,
   buyerId,
   profile,
   addresses,
@@ -189,10 +187,10 @@ export function ProfileView({
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#16191F] px-4 py-2.5">
           <div className="text-xs">
             <div className="font-semibold text-zinc-900 dark:text-zinc-100">
-              {profile.name !== 'Guest Buyer' ? profile.name : authName || authPhone || 'Buyer'}
+              {profile.name !== 'Guest Buyer' ? profile.name : authName || 'Buyer'}
             </div>
             <div className="text-zinc-500 dark:text-zinc-400 font-mono-tabular">
-              {authPhone || profile.phone || authEmail || profile.email}
+              {authEmail || profile.email || profile.phone}
             </div>
           </div>
           {onSwitchAccount && (
@@ -229,7 +227,7 @@ export function ProfileView({
             </p>
           </div>
           <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/30 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-            {authPhone ? dict.profile.verifiedViaPhone : dict.profile.verifiedViaGmail}
+            {dict.profile.verifiedViaGmail}
           </span>
         </div>
 
