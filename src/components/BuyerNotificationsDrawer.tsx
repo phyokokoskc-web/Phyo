@@ -15,7 +15,6 @@ import {
 import type { Language, NotificationType, StoreNotification } from '../types';
 import { t } from '../i18n';
 import { formatDateTime } from '../utils/format';
-import { PWAInstallButton } from './PWAInstallButton';
 
 interface BuyerNotificationsDrawerProps {
   open: boolean;
@@ -195,39 +194,40 @@ export function BuyerNotificationsDrawer({
               </div>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
-              {!iosNeedsHomeScreen && !pushBlocked && pushSupported && !pushActive && onEnablePush && (
-                <button
-                  type="button"
-                  disabled={pushEnabling}
-                  onClick={onEnablePush}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-3 py-1.5 text-[11px] font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 cursor-pointer"
-                >
-                  {pushEnabling ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <BellRing className="w-3.5 h-3.5" />
+              {((!iosNeedsHomeScreen && !pushBlocked && pushSupported && !pushActive && onEnablePush) ||
+                (pushActive && onDisablePush)) && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {!iosNeedsHomeScreen && !pushBlocked && pushSupported && !pushActive && onEnablePush && (
+                    <button
+                      type="button"
+                      disabled={pushEnabling}
+                      onClick={onEnablePush}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-3 py-1.5 text-[11px] font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 cursor-pointer"
+                    >
+                      {pushEnabling ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <BellRing className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {pushEnabling ? dict.notifications.pushEnablingBtn : dict.notifications.pushEnableBtn}
+                      </span>
+                    </button>
                   )}
-                  <span>
-                    {pushEnabling ? dict.notifications.pushEnablingBtn : dict.notifications.pushEnableBtn}
-                  </span>
-                </button>
-              )}
 
-              {pushActive && onDisablePush && (
-                <button
-                  type="button"
-                  disabled={pushEnabling}
-                  onClick={onDisablePush}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
-                >
-                  <BellOff className="w-3.5 h-3.5" />
-                  <span>{dict.notifications.pushDisableBtn}</span>
-                </button>
+                  {pushActive && onDisablePush && (
+                    <button
+                      type="button"
+                      disabled={pushEnabling}
+                      onClick={onDisablePush}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 cursor-pointer"
+                    >
+                      <BellOff className="w-3.5 h-3.5" />
+                      <span>{dict.notifications.pushDisableBtn}</span>
+                    </button>
+                  )}
+                </div>
               )}
-
-              <PWAInstallButton lang={lang} compact />
-            </div>
           </div>
 
           {notifications.length === 0 ? (

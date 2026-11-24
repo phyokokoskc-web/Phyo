@@ -75,7 +75,6 @@ import { WishlistView } from './components/WishlistView';
 import { LiveChatWidget } from './components/LiveChatWidget';
 import { AdminDashboard } from './components/AdminDashboard';
 import { BuyerAuthPanel } from './components/BuyerAuthPanel';
-import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
   BuyerNotificationsDrawer,
@@ -1368,11 +1367,7 @@ export default function App() {
 
           {/* Secondary Workspace Utility Strip */}
           <div className="border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-[#12151B]">
-            <div className="mx-auto max-w-[1280px] px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <span className="text-zinc-500 dark:text-zinc-400">
-                {dict.home.freeDeliveryBanner}
-              </span>
-
+            <div className="mx-auto max-w-[1280px] px-4 sm:px-6 py-2 flex flex-wrap items-center justify-end gap-3 text-xs">
               <div className="flex flex-wrap items-center gap-2.5">
                 {isAuthenticated ? (
                   <button
@@ -1430,8 +1425,6 @@ export default function App() {
                     </span>
                   )}
                 </button>
-
-                <PWAInstallButton lang={lang} compact />
 
                 <button
                   type="button"
