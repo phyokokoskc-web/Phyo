@@ -7,7 +7,7 @@ self.addEventListener('push', (event) => {
     title: 'Shoptopia',
     body: 'New update from the store.',
     icon: '/pwa-192x192.png',
-    badge: '/pwa-192x192.png',
+    badge: '/notif-badge-96x96.png',
     tag: 'shoptopia-alert',
     actionTarget: 'none',
     notifId: '',
@@ -100,7 +100,7 @@ self.addEventListener('message', (event) => {
       self.registration.showNotification(p.title || 'Shoptopia', {
         body: p.body || '',
         icon: p.icon || '/pwa-192x192.png',
-        badge: p.badge || '/pwa-192x192.png',
+        badge: p.badge || '/notif-badge-96x96.png',
         tag: p.tag || `shoptopia-local-${Date.now()}`,
         renotify: true,
         vibrate: [180, 90, 180],

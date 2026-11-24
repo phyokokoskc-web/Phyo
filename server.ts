@@ -1534,7 +1534,7 @@ app.post('/api/push/send', async (req, res) => {
     title: String(rawPayload.title).slice(0, 140),
     body: String(rawPayload.body).slice(0, 600),
     icon: '/pwa-192x192.png',
-    badge: '/pwa-192x192.png',
+    badge: '/notif-badge-96x96.png',
     tag: rawPayload.tag ? String(rawPayload.tag).slice(0, 120) : `shoptopia-${Date.now()}`,
     actionTarget: rawPayload.actionTarget ? String(rawPayload.actionTarget).slice(0, 120) : 'none',
     notifId: rawPayload.notifId ? String(rawPayload.notifId).slice(0, 128) : '',

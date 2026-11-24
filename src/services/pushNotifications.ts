@@ -153,7 +153,7 @@ export async function showOsNotificationBarAlert(notif: StoreNotification): Prom
       await reg.showNotification(title, {
         body,
         icon: '/pwa-192x192.png',
-        badge: '/pwa-192x192.png',
+        badge: '/notif-badge-96x96.png',
         tag,
         data: {
           url: '/',
