@@ -1,5 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Package } from 'lucide-react';
+import {
+  getCachedResolvedImageUrl,
+  isGooglePhotosShareLink,
+  normalizeImageSrcSync,
+  resolveImageUrlAsync,
+} from '../utils/imageUrl';
 
 interface SmartImageProps {
   src: string;
@@ -8,35 +14,60 @@ interface SmartImageProps {
   fallbackLabel?: string;
 }
 
-function normalizeImageSrc(raw: string): string {
-  const trimmed = (raw || '').trim();
-  if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('/')) {
-    return trimmed;
-  }
-  try {
-    const url = new URL(trimmed);
-    const host = url.hostname.toLowerCase();
-    // Auto-convert standard Dropbox share links (dl=0 / dl=1 -> raw=1) while keeping rlkey intact
-    if (host === 'dropbox.com' || host.endsWith('.dropbox.com')) {
-      url.searchParams.delete('dl');
-      url.searchParams.set('raw', '1');
-      return url.toString();
-    }
-    return trimmed;
-  } catch {
-    return trimmed;
-  }
-}
-
 export function SmartImage({ src, alt, className = '', fallbackLabel }: SmartImageProps) {
-  const resolvedSrc = useMemo(() => normalizeImageSrc(src), [src]);
+  const trimmed = (src || '').trim();
+  const isAsyncShare = useMemo(() => isGooglePhotosShareLink(trimmed), [trimmed]);
+  const syncSrc = useMemo(
+    () => (isAsyncShare ? getCachedResolvedImageUrl(trimmed) || '' : normalizeImageSrcSync(trimmed)),
+    [trimmed, isAsyncShare]
+  );
+
+  const [asyncResolved, setAsyncResolved] = useState<string>(syncSrc);
+  const [resolving, setResolving] = useState<boolean>(isAsyncShare && !syncSrc);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setFailed(false);
-  }, [resolvedSrc]);
+    if (!isAsyncShare) {
+      setAsyncResolved(syncSrc);
+      setResolving(false);
+      return;
+    }
 
-  if (!resolvedSrc || failed) {
+    const cached = getCachedResolvedImageUrl(trimmed);
+    if (cached) {
+      setAsyncResolved(cached);
+      setResolving(false);
+      return;
+    }
+
+    let active = true;
+    setAsyncResolved('');
+    setResolving(true);
+    void resolveImageUrlAsync(trimmed).then((url) => {
+      if (!active) return;
+      setAsyncResolved(url);
+      setResolving(false);
+      if (!url) setFailed(true);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [trimmed, isAsyncShare, syncSrc]);
+
+  const effectiveSrc = isAsyncShare ? asyncResolved : syncSrc;
+
+  if (resolving) {
+    return (
+      <div
+        aria-label={alt}
+        className={`animate-pulse bg-zinc-200/80 dark:bg-zinc-800/80 ${className}`}
+      />
+    );
+  }
+
+  if (!effectiveSrc || failed) {
     return (
       <div
         className={`flex flex-col items-center justify-center bg-gradient-to-br from-zinc-100 to-zinc-200 dark:from-zinc-800 dark:to-zinc-900 text-zinc-500 dark:text-zinc-400 p-4 text-center ${className}`}
@@ -51,7 +82,7 @@ export function SmartImage({ src, alt, className = '', fallbackLabel }: SmartIma
 
   return (
     <img
-      src={resolvedSrc}
+      src={effectiveSrc}
       alt={alt}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}

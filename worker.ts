@@ -5,6 +5,10 @@ import {
   type PushNotificationPayload,
   type PushSubscriptionInput,
 } from './shared/webPush';
+import {
+  isGooglePhotosShareUrl,
+  resolveGooglePhotosShareUrl,
+} from './shared/googlePhotos';
 
 interface WorkerEnv {
   ASSETS: {
@@ -30,6 +34,52 @@ function jsonResponse(data: unknown, status = 200): Response {
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === '/api/resolve-image' && request.method === 'GET') {
+      const targetUrl = (url.searchParams.get('url') || '').trim();
+      if (!isGooglePhotosShareUrl(targetUrl)) {
+        return jsonResponse(
+          { ok: false, error: 'Only valid Google Photos share links are supported' },
+          400
+        );
+      }
+
+      const cacheKey = new Request(url.toString(), { method: 'GET' });
+      try {
+        const cache = (caches as unknown as { default?: Cache }).default;
+        if (cache) {
+          const hit = await cache.match(cacheKey);
+          if (hit) return hit;
+        }
+      } catch {
+        // Cache API unavailable
+      }
+
+      const resolved = await resolveGooglePhotosShareUrl(targetUrl);
+      if (!resolved) {
+        return jsonResponse(
+          { ok: false, error: 'Could not extract image from Google Photos link' },
+          404
+        );
+      }
+
+      const response = new Response(JSON.stringify({ ok: true, imageUrl: resolved }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'public, max-age=3600',
+        },
+      });
+      try {
+        const cache = (caches as unknown as { default?: Cache }).default;
+        if (cache) {
+          await cache.put(cacheKey, response.clone());
+        }
+      } catch {
+        // Ignore cache write errors
+      }
+      return response;
+    }
 
     if (url.pathname === '/api/push/public-key' && request.method === 'GET') {
       const publicKey = (env.VAPID_PUBLIC_KEY || '').trim();

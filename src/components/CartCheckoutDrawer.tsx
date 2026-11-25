@@ -690,10 +690,9 @@ export function CartCheckoutDrawer({
                     <div className="flex items-center gap-4 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3">
                       <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
                         {activeWallet.qrImage ? (
-                          <img
+                          <SmartImage
                             src={activeWallet.qrImage}
                             alt={`${paymentMethod} QR`}
-                            referrerPolicy="no-referrer"
                             className="h-full w-full object-cover"
                           />
                         ) : (

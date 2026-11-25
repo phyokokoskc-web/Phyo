@@ -14,6 +14,9 @@ import {
   LayoutGrid,
   List,
   Bell,
+  Store,
+  Heart,
+  Package,
 } from 'lucide-react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
@@ -80,6 +83,7 @@ import {
   BuyerNotificationsDrawer,
   LiveNotificationBanner,
 } from './components/BuyerNotificationsDrawer';
+import { normalizeImageSrcSync } from './utils/imageUrl';
 
 type AppView = 'shop' | 'wishlist' | 'orders' | 'profile' | 'admin';
 type SortOption = 'popular' | 'price-asc' | 'price-desc' | 'newest';
@@ -1290,7 +1294,7 @@ export default function App() {
       {view !== 'admin' ? (
         <>
           <header className="sticky top-0 z-40 border-b border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-[#12151B]/95 backdrop-blur-sm">
-            <div className="mx-auto max-w-[1280px] px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
+            <div className="mx-auto max-w-[1280px] px-4 sm:px-6 h-14 md:h-16 flex items-center justify-between gap-3 md:gap-8">
               {/* Zone 1: Single-line Brand Wordmark */}
               <a
                 href="/"
@@ -1298,23 +1302,26 @@ export default function App() {
                   e.preventDefault();
                   navigate('shop');
                 }}
-                className="inline-flex items-center gap-2 font-display text-lg font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-2 min-w-0 font-display text-base sm:text-lg font-bold tracking-tight text-zinc-900 dark:text-zinc-100 whitespace-nowrap cursor-pointer"
               >
                 {brand.logoImage && (
                   <img
-                    src={brand.logoImage}
+                    src={normalizeImageSrcSync(brand.logoImage)}
                     alt=""
                     referrerPolicy="no-referrer"
                     onError={(e) => e.currentTarget.classList.add('hidden')}
                     onLoad={(e) => e.currentTarget.classList.remove('hidden')}
-                    className="h-7 w-7 rounded-md object-cover border border-zinc-200 dark:border-zinc-700"
+                    className="h-7 w-7 rounded-md object-cover border border-zinc-200 dark:border-zinc-700 shrink-0"
                   />
                 )}
-                <span>{brand.storeName}</span>
+                <span className="truncate">{brand.storeName}</span>
               </a>
 
-              {/* Zone 2: Concise Single-line Buyer Nav Links */}
-              <nav className="flex items-center gap-5 sm:gap-7 overflow-x-auto no-scrollbar text-sm font-medium">
+              {/* Zone 2: Desktop Single-line Buyer Nav Links */}
+              <nav
+                aria-label="Primary navigation"
+                className="hidden md:flex items-center gap-6 lg:gap-7 text-sm font-medium"
+              >
                 {(
                   [
                     { id: 'shop', href: '/', label: dict.nav.shop },
@@ -1355,7 +1362,7 @@ export default function App() {
                   setDirectBuyRef(null);
                   setCartOpen(true);
                 }}
-                className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-4 py-2 text-xs sm:text-sm font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-3.5 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-semibold text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ShoppingBag className="w-4 h-4" />
                 <span className="font-mono-tabular">
@@ -1363,12 +1370,62 @@ export default function App() {
                 </span>
               </button>
             </div>
+
+            {/* Mobile Primary Navigation Row (Always visible on phone screens) */}
+            <nav
+              aria-label="Mobile navigation"
+              className="md:hidden border-t border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/80 dark:bg-zinc-900/50"
+            >
+              <div className="mx-auto max-w-[1280px] grid grid-cols-4 px-1">
+                {(
+                  [
+                    { id: 'shop', href: '/', label: dict.nav.shop, Icon: Store, count: 0 },
+                    {
+                      id: 'wishlist',
+                      href: '/wishlist',
+                      label: dict.nav.wishlist,
+                      Icon: Heart,
+                      count: wishlist.length,
+                    },
+                    { id: 'orders', href: '/orders', label: dict.nav.orders, Icon: Package, count: 0 },
+                    { id: 'profile', href: '/profile', label: dict.nav.profile, Icon: UserIcon, count: 0 },
+                  ] as const
+                ).map(({ id, href, label, Icon, count }) => {
+                  const active = view === id;
+                  return (
+                    <a
+                      key={id}
+                      href={href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        navigate(id);
+                      }}
+                      className={`flex flex-col items-center justify-center gap-1 py-2 px-1 border-b-2 text-[11px] leading-tight transition-colors cursor-pointer ${
+                        active
+                          ? 'border-zinc-900 dark:border-zinc-100 bg-white dark:bg-[#12151B] text-zinc-900 dark:text-zinc-100 font-semibold'
+                          : 'border-transparent text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 font-medium'
+                      }`}
+                    >
+                      <span className="relative inline-flex items-center justify-center">
+                        <Icon className="w-4 h-4" />
+                        {count > 0 && (
+                          <span className="absolute -top-1.5 -right-2.5 min-w-[15px] h-[15px] px-1 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-[9px] font-mono-tabular font-bold flex items-center justify-center">
+                            {count}
+                          </span>
+                        )}
+                      </span>
+                      <span className="truncate max-w-full">{label}</span>
+                    </a>
+                  );
+                })}
+              </div>
+            </nav>
           </header>
 
           {/* Secondary Workspace Utility Strip */}
           <div className="border-b border-zinc-200/80 dark:border-zinc-800/80 bg-white dark:bg-[#12151B]">
-            <div className="mx-auto max-w-[1280px] px-4 sm:px-6 py-2 flex flex-wrap items-center justify-end gap-3 text-xs">
-              <div className="flex flex-wrap items-center gap-2.5">
+            <div className="mx-auto max-w-[1280px] px-4 sm:px-6 py-2 flex flex-wrap items-center justify-start sm:justify-end gap-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
                 {isAuthenticated ? (
                   <button
                     type="button"

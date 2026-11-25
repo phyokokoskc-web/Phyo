@@ -12,6 +12,10 @@ import {
   type PushSubscriptionInput,
   type VapidConfig,
 } from './shared/webPush.ts';
+import {
+  isGooglePhotosShareUrl,
+  resolveGooglePhotosShareUrl,
+} from './shared/googlePhotos.ts';
 import type {
   Address,
   BannerSlide,
@@ -1567,6 +1571,39 @@ app.post('/api/push/send', async (req, res) => {
   });
 });
 
+const googlePhotosCache = new Map<string, { imageUrl: string; expiresAt: number }>();
+
+app.get('/api/resolve-image', async (req, res) => {
+  const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+  if (!isGooglePhotosShareUrl(rawUrl)) {
+    res.status(400).json({ ok: false, error: 'Only valid Google Photos share links are supported' });
+    return;
+  }
+
+  const now = Date.now();
+  const cached = googlePhotosCache.get(rawUrl);
+  if (cached && cached.expiresAt > now) {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.json({ ok: true, imageUrl: cached.imageUrl });
+    return;
+  }
+
+  const resolved = await resolveGooglePhotosShareUrl(rawUrl);
+  if (!resolved) {
+    res.status(404).json({ ok: false, error: 'Could not extract image from Google Photos link' });
+    return;
+  }
+
+  if (googlePhotosCache.size >= 250) {
+    const oldestKey = googlePhotosCache.keys().next().value;
+    if (oldestKey) googlePhotosCache.delete(oldestKey);
+  }
+  googlePhotosCache.set(rawUrl, { imageUrl: resolved, expiresAt: now + 3600 * 1000 });
+
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.json({ ok: true, imageUrl: resolved });
+});
+
 // Vite Middleware in Development / Static Build in Production
 async function startServer() {
   const isProduction =
@@ -1581,10 +1618,15 @@ async function startServer() {
       try {
         const result = await vite.transformRequest('/@vite/client');
         if (result?.code) {
-          const patched = result.code.replace(
-            'transport.connect(createHMRHandler(handleMessage));',
-            '/* HMR disabled: WebSocket connect skipped */'
-          );
+          const patched = result.code
+            .replace(
+              'transport.connect(createHMRHandler(handleMessage));',
+              '/* HMR disabled: WebSocket connect skipped */'
+            )
+            .replace(
+              'else throw new SendBeforeConnectError("send was called before connect");',
+              'else return;'
+            );
           res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
           res.send(patched);
           return;

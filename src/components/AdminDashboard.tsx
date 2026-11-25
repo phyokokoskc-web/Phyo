@@ -3286,6 +3286,7 @@ export function AdminDashboard({
                   type="text"
                   value={bannerForm.image}
                   onChange={(e) => setBannerForm({ ...bannerForm, image: e.target.value })}
+                  placeholder="https://... (Google Photos / Dropbox)"
                   className="flex-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-xs text-zinc-900 dark:text-zinc-100"
                 />
                 <label className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 px-3 py-2 text-xs font-medium cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 whitespace-nowrap">
@@ -3531,7 +3532,7 @@ export function AdminDashboard({
                         type="text"
                         value={slotVal}
                         onChange={(e) => updateProdImageSlot(slotIdx, e.target.value)}
-                        placeholder="https://..."
+                        placeholder="https://... (Google Photos / Dropbox)"
                         aria-label={`${slotLabel} URL`}
                         className="w-full rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11px] text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400"
                       />

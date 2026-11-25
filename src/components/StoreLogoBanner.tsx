@@ -1,7 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Edit3, EyeOff, Store } from 'lucide-react';
 import type { Language, StoreBrandConfig } from '../types';
 import { t } from '../i18n';
+import {
+  getCachedResolvedImageUrl,
+  isGooglePhotosShareLink,
+  normalizeImageSrcSync,
+  resolveImageUrlAsync,
+} from '../utils/imageUrl';
 
 interface StoreLogoBannerProps {
   brand: StoreBrandConfig;
@@ -27,19 +33,50 @@ export function StoreLogoBanner({
   onEdit,
 }: StoreLogoBannerProps) {
   const dict = t(lang);
+  const rawLogo = (brand.logoImage || '').trim();
+  const isAsyncShare = useMemo(() => isGooglePhotosShareLink(rawLogo), [rawLogo]);
+  const initialSrc = useMemo(
+    () => (isAsyncShare ? getCachedResolvedImageUrl(rawLogo) || '' : normalizeImageSrcSync(rawLogo)),
+    [rawLogo, isAsyncShare]
+  );
+
+  const [logoSrc, setLogoSrc] = useState(initialSrc);
   const [imgFailed, setImgFailed] = useState(false);
 
   useEffect(() => {
     setImgFailed(false);
-  }, [brand.logoImage]);
+    if (!isAsyncShare) {
+      setLogoSrc(initialSrc);
+      return;
+    }
+    const cached = getCachedResolvedImageUrl(rawLogo);
+    if (cached) {
+      setLogoSrc(cached);
+      return;
+    }
+    let active = true;
+    setLogoSrc('');
+    void resolveImageUrlAsync(rawLogo).then((resolved) => {
+      if (!active) return;
+      if (resolved) setLogoSrc(resolved);
+      else setImgFailed(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [rawLogo, isAsyncShare, initialSrc]);
 
   if (!brand.showLogoBanner && !isAdmin) {
     return null;
   }
 
-  const headline = (lang === 'mm' ? brand.bannerTitleMm : brand.bannerTitle) || (lang === 'mm' ? brand.bannerTitle : brand.bannerTitleMm);
-  const subtitle = (lang === 'mm' ? brand.bannerSubtitleMm : brand.bannerSubtitle) || (lang === 'mm' ? brand.bannerSubtitle : brand.bannerSubtitleMm);
-  const hasImage = Boolean(brand.logoImage?.trim()) && !imgFailed;
+  const headline =
+    (lang === 'mm' ? brand.bannerTitleMm : brand.bannerTitle) ||
+    (lang === 'mm' ? brand.bannerTitle : brand.bannerTitleMm);
+  const subtitle =
+    (lang === 'mm' ? brand.bannerSubtitleMm : brand.bannerSubtitle) ||
+    (lang === 'mm' ? brand.bannerSubtitle : brand.bannerSubtitleMm);
+  const hasImage = Boolean(logoSrc) && !imgFailed;
 
   return (
     <section
@@ -53,7 +90,7 @@ export function StoreLogoBanner({
           {hasImage ? (
             <div className="h-11 sm:h-12 w-auto min-w-[2.75rem] sm:min-w-[3rem] max-w-[140px] sm:max-w-[180px] shrink-0 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 overflow-hidden flex items-center justify-center px-1">
               <img
-                src={brand.logoImage}
+                src={logoSrc}
                 alt={brand.storeName}
                 referrerPolicy="no-referrer"
                 onError={() => setImgFailed(true)}
